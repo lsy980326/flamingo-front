@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Flamingo Yjs Tester (Hybrid: WebRTC + WebSocket)</title>
+    <style>
+      /* 스타일은 이전과 동일 */
+      body {
+        font-family: sans-serif;
+        display: flex;
+        gap: 20px;
+        margin: 20px;
+      }
+      .panel {
+        border: 1px solid #ccc;
+        padding: 15px;
+        border-radius: 8px;
+        flex: 1;
+      }
+      #connection-panel {
+        min-width: 400px;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        box-sizing: border-box;
+      }
+      button {
+        padding: 10px 15px;
+        margin-right: 5px;
+        cursor: pointer;
+      }
+      #log-container {
+        height: 400px;
+        overflow-y: scroll;
+        border: 1px solid #eee;
+        padding: 5px;
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      #canvas-container {
+        position: relative;
+        width: 500px;
+        height: 500px;
+        border: 2px solid black;
+        cursor: crosshair;
+      }
+      .point {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        background-color: red;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel" id="connection-panel">
+      <h2>1. Connection & Auth</h2>
+      <input type="text" id="tokenInput" placeholder="JWT Access Token" />
+      <input
+        type="text"
+        id="layerIdInput"
+        value="6881ee2d472b639dee2d903c"
+        placeholder="Layer ID"
+      />
+      <button id="connectBtn">Connect to Layer</button>
+      <button id="disconnectBtn">Disconnect</button>
+      <h3>Logs</h3>
+      <div id="log-container"></div>
+    </div>
+    <div class="panel">
+      <h2>2. Canvas</h2>
+      <p>Canvas를 클릭하여 점을 추가하세요.</p>
+      <div id="canvas-container"></div>
+    </div>
+
+    <script type="module">
+      import * as Y from "https://cdn.skypack.dev/yjs";
+      import { WebrtcProvider } from "https://cdn.skypack.dev/y-webrtc";
+      import { WebsocketProvider } from "https://cdn.skypack.dev/y-websocket";
+
+      let ydoc, webrtcProvider, websocketProvider, pointsArray;
+      const ui = {
+        tokenInput: document.getElementById("tokenInput"),
+        layerIdInput: document.getElementById("layerIdInput"),
+        logContainer: document.getElementById("log-container"),
+        canvasContainer: document.getElementById("canvas-container"),
+        connectBtn: document.getElementById("connectBtn"),
+        disconnectBtn: document.getElementById("disconnectBtn"),
+      };
+
+      function log(message) {
+        ui.logContainer.innerHTML += `<p>[${new Date().toLocaleTimeString()}] ${message}</p>`;
+        ui.logContainer.scrollTop = ui.logContainer.scrollHeight;
+      }
+
+      function connectYjs() {
+        if (ydoc) return log("Already connected.");
+
+        const token = ui.tokenInput.value.trim();
+        const layerId = ui.layerIdInput.value.trim();
+        if (!token || !layerId)
+          return alert("Token과 Layer ID를 모두 입력해주세요.");
+
+        const docName = `layer-${layerId}`;
+        log(`Attempting to connect to doc: ${docName}`);
+
+        ydoc = new Y.Doc();
+
+        // 1. WebSocket Provider (안정적인 폴백 및 데이터 영속성 담당)
+        websocketProvider = new WebsocketProvider(
+          "ws://localhost:8080",
+          docName,
+          ydoc,
+          { params: { token } }
+        );
+        websocketProvider.on("status", (event) =>
+          log(`WebSocket Status: ${event.status}`)
+        );
+
+        // 2. WebRTC Provider (빠른 P2P 동기화 담당)
+        // WebSocket Provider의 awareness를 사용하여 P2P 연결을 설정합니다.
+        webrtcProvider = new WebrtcProvider(docName, ydoc, {
+          signaling: ["wss://signaling.yjs.dev"], // 공개 시그널링 서버 사용
+          awareness: websocketProvider.awareness, // ✨ WebSocket의 awareness를 공유
+        });
+        webrtcProvider.on("status", (event) =>
+          log(`WebRTC Status: ${event.status}`)
+        );
+
+        pointsArray = ydoc.getArray("points");
+        pointsArray.observe(() => {
+          log("Received points update. Redrawing canvas...");
+          renderPoints();
+        });
+
+        // DB에서 데이터가 복구되면 화면을 그립니다.
+        websocketProvider.on("sync", (synced) => {
+          if (synced) {
+            log("✅ Synced with server. Initial drawing restored.");
+            renderPoints();
+          }
+        });
+      }
+
+      function disconnectYjs() {
+        if (webrtcProvider) webrtcProvider.disconnect();
+        if (websocketProvider) websocketProvider.disconnect();
+        webrtcProvider = null;
+        websocketProvider = null;
+        ydoc = null;
+        log("Disconnected.");
+      }
+
+      function renderPoints() {
+        ui.canvasContainer.innerHTML = "";
+        const points = pointsArray.toArray();
+        points.forEach((p) => {
+          const pointEl = document.createElement("div");
+          pointEl.className = "point";
+          pointEl.style.left = `${p.x}px`;
+          pointEl.style.top = `${p.y}px`;
+          ui.canvasContainer.appendChild(pointEl);
+        });
+      }
+
+      ui.connectBtn.addEventListener("click", connectYjs);
+      ui.disconnectBtn.addEventListener("click", disconnectYjs);
+      ui.canvasContainer.addEventListener("click", (event) => {
+        if (!pointsArray) return alert("먼저 Layer에 연결해주세요.");
+        const rect = ui.canvasContainer.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        pointsArray.push([{ x, y }]);
+      });
+    </script>
+  </body>
+</html>

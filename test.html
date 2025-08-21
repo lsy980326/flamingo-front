@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Flamingo Socket Tester - Full CRUD</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 20px;
+        display: flex;
+        gap: 15px;
+        background-color: #f0f2f5;
+      }
+      .container {
+        flex-basis: 0;
+        flex-grow: 1;
+        border: 1px solid #ccc;
+        padding: 15px;
+        border-radius: 8px;
+        background-color: white;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2,
+      h3,
+      h4 {
+        margin-top: 0;
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      button {
+        padding: 10px 15px;
+        margin-right: 5px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        background-color: #007bff;
+        color: white;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .action-btn {
+        padding: 4px 8px;
+        font-size: 12px;
+        margin-left: 5px;
+      }
+      .delete-btn {
+        background-color: #dc3545;
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid #eee;
+        margin: 15px 0;
+      }
+      .list-container {
+        border: 1px solid #ccc;
+        padding: 10px;
+        overflow-y: scroll;
+        background-color: #f9f9f9;
+        min-height: 250px;
+      }
+      .log-entry {
+        margin: 0;
+        padding: 5px;
+        border-bottom: 1px solid #eee;
+        font-family: monospace;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .list-item-wrapper {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+      }
+      .list-item {
+        flex-grow: 1;
+        background-color: white;
+        padding: 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        border: 1px solid #ddd;
+      }
+      .list-item.selected {
+        border-color: #007bff;
+        background-color: #e7f3ff;
+        font-weight: bold;
+      }
+      .success {
+        color: green;
+      }
+      .error {
+        color: red;
+      }
+      .info {
+        color: blue;
+      }
+      .event {
+        color: purple;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>1. Connection</h2>
+      <input
+        type="text"
+        id="tokenInput"
+        placeholder="accessToken을 여기에 붙여넣으세요"
+      />
+      <button onclick="connectSocket()">Connect</button>
+      <button onclick="disconnectSocket()" id="disconnectBtn" disabled>
+        Disconnect
+      </button>
+      <input
+        type="text"
+        id="projectIdInput"
+        placeholder="참여할 프로젝트의 ID (UUID)"
+      />
+      <button onclick="joinProject()" id="joinBtn" disabled>
+        Join Project
+      </button>
+      <h3>Connection Logs</h3>
+      <div id="log" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>2. Pages</h2>
+      <div id="page-controls" style="display: none">
+        <input type="text" id="pageNameInput" placeholder="New Page Name" />
+        <button onclick="createPage()">Create Page</button>
+      </div>
+      <div id="pages-list" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>3. Canvases</h2>
+      <div id="canvas-controls" style="display: none">
+        <h4>Create New Canvas</h4>
+        <input type="text" id="canvasNameInput" placeholder="New Canvas Name" />
+        <input
+          type="number"
+          id="canvasWidthInput"
+          value="800"
+          placeholder="Width"
+        />
+        <input
+          type="number"
+          id="canvasHeightInput"
+          value="1200"
+          placeholder="Height"
+        />
+        <select id="canvasUnitInput">
+          <option value="px">px</option>
+        </select>
+        <button onclick="createCanvas()">Create Canvas</button>
+      </div>
+      <div id="canvas-list" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>4. Layers</h2>
+      <div id="layer-controls" style="display: none">
+        <h4>Create New Layer</h4>
+        <input type="text" id="layerNameInput" placeholder="New Layer Name" />
+        <select id="layerTypeInput">
+          <option value="brush">Brush</option>
+          <option value="text">Text</option>
+        </select>
+        <button onclick="createLayer()">Create Layer</button>
+      </div>
+      <div id="layer-list" class="list-container"></div>
+    </div>
+
+    <script>
+      let socket;
+      let selectedProjectId = null,
+        selectedPageId = null,
+        selectedCanvasId = null;
+      let allData = { pages: [], canvases: [], layers: [] };
+
+      const ui = {
+        log: document.getElementById("log"),
+        pagesList: document.getElementById("pages-list"),
+        canvasList: document.getElementById("canvas-list"),
+        layerList: document.getElementById("layer-list"),
+        tokenInput: document.getElementById("tokenInput"),
+        projectIdInput: document.getElementById("projectIdInput"),
+        pageNameInput: document.getElementById("pageNameInput"),
+        canvasNameInput: document.getElementById("canvasNameInput"),
+        canvasWidthInput: document.getElementById("canvasWidthInput"),
+        canvasHeightInput: document.getElementById("canvasHeightInput"),
+        canvasUnitInput: document.getElementById("canvasUnitInput"),
+        layerNameInput: document.getElementById("layerNameInput"),
+        layerTypeInput: document.getElementById("layerTypeInput"),
+        pageControls: document.getElementById("page-controls"),
+        canvasControls: document.getElementById("canvas-controls"),
+        layerControls: document.getElementById("layer-controls"),
+        disconnectBtn: document.getElementById("disconnectBtn"),
+        joinBtn: document.getElementById("joinBtn"),
+      };
+
+      function log(message, type = "info") {
+        const p = document.createElement("p");
+        p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        p.className = `log-entry ${type}`;
+        ui.log.appendChild(p);
+        ui.log.scrollTop = ui.log.scrollHeight;
+      }
+
+      function connectSocket() {
+        const jwtToken = ui.tokenInput.value.trim();
+        if (!jwtToken) {
+          alert("JWT 토큰을 입력해주세요.");
+          return;
+        }
+        if (socket && socket.connected) {
+          log("Already connected.", "info");
+          return;
+        }
+        const SERVER_URL = "ws://3.38.2.73:8080";
+        log(`Attempting to connect to ${SERVER_URL}...`);
+        socket = io(SERVER_URL, {
+          auth: { token: jwtToken },
+          transports: ["websocket"],
+        });
+        socket.on("connect", () => {
+          log(`Connected successfully! Socket ID: ${socket.id}`, "success");
+          ui.disconnectBtn.disabled = false;
+          ui.joinBtn.disabled = false;
+          setupEventListeners();
+        });
+        socket.on("connect_error", (err) =>
+          log(`Connection Error: ${err.message}`, "error")
+        );
+        socket.on("disconnect", (reason) => {
+          log(`Disconnected. Reason: ${reason}`, "info");
+          ui.disconnectBtn.disabled = true;
+          ui.joinBtn.disabled = true;
+          ["pageControls", "canvasControls", "layerControls"].forEach(
+            (c) => (ui[c].style.display = "none")
+          );
+        });
+      }
+
+      function disconnectSocket() {
+        if (socket) socket.disconnect();
+      }
+
+      function setupEventListeners() {
+        socket.off(); // 기존 리스너 제거
+        socket.on("connect", () => {
+          /* 이미 처리됨 */
+        });
+        socket.on("connect_error", (err) =>
+          log(`Connection Error: ${err.message}`, "error")
+        );
+        socket.on("disconnect", (reason) => {
+          /* 이미 처리됨 */
+        });
+
+        socket.on("error", (data) =>
+          log(`SERVER ERROR: ${data.message}`, "error")
+        );
+        socket.on("initial-data", (data) => {
+          log(`Received initial-data`, "event");
+          allData = data;
+          renderPages();
+        });
+        socket.on("page-created", (newPage) => {
+          log(`Received page-created`, "event");
+          allData.pages.push(newPage);
+          renderPages();
+        });
+        socket.on("canvas-created", (newCanvas) => {
+          log(`Received canvas-created`, "event");
+          allData.canvases.push(newCanvas);
+          renderCanvases();
+        });
+        socket.on("layer-created", (newLayer) => {
+          log(`Received layer-created`, "event");
+          allData.layers.push(newLayer);
+          renderLayers();
+        });
+        socket.on("page-updated", (updatedPage) => {
+          log(`Received page-updated`, "event");
+          const index = allData.pages.findIndex(
+            (p) => p._id === updatedPage._id
+          );
+          if (index > -1) allData.pages[index] = updatedPage;
+          renderPages();
+        });
+        socket.on("canvas-updated", (updatedCanvas) => {
+          log(`Received canvas-updated`, "event");
+          const index = allData.canvases.findIndex(
+            (c) => c._id === updatedCanvas._id
+          );
+          if (index > -1) allData.canvases[index] = updatedCanvas;
+          renderCanvases();
+        });
+        socket.on("layer-updated", (updatedLayer) => {
+          log(`Received layer-updated`, "event");
+          const index = allData.layers.findIndex(
+            (l) => l._id === updatedLayer._id
+          );
+          if (index > -1) allData.layers[index] = updatedLayer;
+          renderLayers();
+        });
+        socket.on("page-deleted", ({ pageId }) => {
+          log(`Received page-deleted`, "event");
+          allData.pages = allData.pages.filter((p) => p._id !== pageId);
+          if (selectedPageId === pageId) {
+            selectedPageId = null;
+            selectedCanvasId = null;
+          }
+          renderPages();
+        });
+        socket.on("canvas-deleted", ({ canvasId }) => {
+          log(`Received canvas-deleted`, "event");
+          allData.canvases = allData.canvases.filter((c) => c._id !== canvasId);
+          if (selectedCanvasId === canvasId) {
+            selectedCanvasId = null;
+          }
+          renderCanvases();
+        });
+        socket.on("layer-deleted", ({ layerId }) => {
+          log(`Received layer-deleted`, "event");
+          allData.layers = allData.layers.filter((l) => l._id !== layerId);
+          renderLayers();
+        });
+      }
+
+      function joinProject() {
+        selectedProjectId = ui.projectIdInput.value.trim();
+        if (!selectedProjectId) {
+          alert("프로젝트 ID를 입력해주세요.");
+          return;
+        }
+        socket.emit("join-project", selectedProjectId);
+        ui.pageControls.style.display = "block";
+      }
+      function createPage() {
+        const pageName = ui.pageNameInput.value.trim();
+        if (!pageName) {
+          alert("페이지 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-page", {
+          projectId: selectedProjectId,
+          name: pageName,
+        });
+        ui.pageNameInput.value = "";
+      }
+      function createCanvas() {
+        const canvasName = ui.canvasNameInput.value.trim();
+        if (!canvasName) {
+          alert("캔버스 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-canvas", {
+          pageId: selectedPageId,
+          projectId: selectedProjectId,
+          name: canvasName,
+          width: parseInt(ui.canvasWidthInput.value, 10),
+          height: parseInt(ui.canvasHeightInput.value, 10),
+          unit: ui.canvasUnitInput.value,
+        });
+        ui.canvasNameInput.value = "";
+      }
+      function createLayer() {
+        const layerName = ui.layerNameInput.value.trim();
+        if (!layerName) {
+          alert("레이어 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-layer", {
+          canvasId: selectedCanvasId,
+          projectId: selectedProjectId,
+          name: layerName,
+          type: ui.layerTypeInput.value,
+        });
+        ui.layerNameInput.value = "";
+      }
+      function updatePage(pageId) {
+        const oldName = allData.pages.find((p) => p._id === pageId)?.name || "";
+        const newName = prompt("Enter new page name:", oldName);
+        if (newName && newName !== oldName) {
+          socket.emit("update-page", {
+            projectId: selectedProjectId,
+            pageId,
+            updates: { name: newName },
+          });
+        }
+      }
+      function updateCanvas(canvasId) {
+        const oldName =
+          allData.canvases.find((c) => c._id === canvasId)?.name || "";
+        const newName = prompt("Enter new canvas name:", oldName);
+        if (newName && newName !== oldName) {
+          socket.emit("update-canvas", {
+            projectId: selectedProjectId,
+            canvasId,
+            updates: { name: newName },
+          });
+        }
+      }
+      function updateLayer(layerId) {
+        const oldName =
+          allData.layers.find((l) => l._id === layerId)?.name || "";
+        const newName = prompt("Enter new layer name:", oldName);
+        if (newName && newName !== oldName) {
+          socket.emit("update-layer", {
+            projectId: selectedProjectId,
+            layerId,
+            updates: { name: newName },
+          });
+        }
+      }
+      function deletePage(pageId) {
+        if (confirm(`페이지와 하위 모든 내용을 삭제하시겠습니까?`)) {
+          socket.emit("delete-page", { projectId: selectedProjectId, pageId });
+        }
+      }
+      function deleteCanvas(canvasId) {
+        if (confirm(`캔버스와 하위 모든 레이어를 삭제하시겠습니까?`)) {
+          socket.emit("delete-canvas", {
+            projectId: selectedProjectId,
+            canvasId,
+          });
+        }
+      }
+      function deleteLayer(layerId) {
+        if (confirm(`레이어를 삭제하시겠습니까?`)) {
+          socket.emit("delete-layer", {
+            projectId: selectedProjectId,
+            layerId,
+          });
+        }
+      }
+
+      function renderPages() {
+        ui.pagesList.innerHTML = "";
+        allData.pages
+          .sort((a, b) => a.order - b.order)
+          .forEach((page) => {
+            const item = createListItem(
+              page,
+              `(P) ${page.name}`,
+              () => selectPage(page._id),
+              updatePage,
+              deletePage
+            );
+            ui.pagesList.appendChild(item);
+          });
+        renderCanvases();
+      }
+      function renderCanvases() {
+        ui.canvasList.innerHTML = "";
+        ui.layerControls.style.display = "none";
+        if (!selectedPageId) return;
+        allData.canvases
+          .filter((c) => c.pageId === selectedPageId)
+          .sort((a, b) => a.order - b.order)
+          .forEach((canvas) => {
+            const item = createListItem(
+              canvas,
+              `(C) ${canvas.name}`,
+              () => selectCanvas(canvas._id),
+              updateCanvas,
+              deleteCanvas
+            );
+            ui.canvasList.appendChild(item);
+          });
+        renderLayers();
+      }
+      function renderLayers() {
+        ui.layerList.innerHTML = "";
+        if (!selectedCanvasId) return;
+        allData.layers
+          .filter((l) => l.canvasId === selectedCanvasId)
+          .sort((a, b) => a.order - b.order)
+          .forEach((layer) => {
+            const item = createListItem(
+              layer,
+              `(L) [${layer.type}] ${layer.name}`,
+              () => selectLayer(layer._id),
+              updateLayer,
+              deleteLayer
+            );
+            ui.layerList.appendChild(item);
+          });
+      }
+
+      function createListItem(data, text, onClick, onUpdate, onDelete) {
+        const itemWrapper = document.createElement("div");
+        itemWrapper.className = "list-item-wrapper";
+        const item = document.createElement("div");
+        item.className = "list-item";
+        item.dataset.id = data._id;
+        item.textContent = text;
+        item.onclick = onClick;
+        const updateBtn = document.createElement("button");
+        updateBtn.className = "action-btn";
+        updateBtn.textContent = "✏️";
+        updateBtn.onclick = (e) => {
+          e.stopPropagation();
+          onUpdate(data._id);
+        };
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "action-btn delete-btn";
+        deleteBtn.textContent = "❌";
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          onDelete(data._id);
+        };
+        itemWrapper.appendChild(item);
+        itemWrapper.appendChild(updateBtn);
+        itemWrapper.appendChild(deleteBtn);
+        return itemWrapper;
+      }
+
+      function selectPage(id) {
+        selectedPageId = id;
+        selectedCanvasId = null;
+        ui.canvasControls.style.display = "block";
+        ui.layerControls.style.display = "none";
+        updateSelectionUI();
+        renderCanvases();
+      }
+      function selectCanvas(id) {
+        selectedCanvasId = id;
+        ui.layerControls.style.display = "block";
+        updateSelectionUI();
+        renderLayers();
+      }
+      function selectLayer(id) {
+        /* Do nothing for now */
+      }
+
+      function updateSelectionUI() {
+        document
+          .querySelectorAll(".list-item")
+          .forEach((el) => el.classList.remove("selected"));
+        if (selectedPageId)
+          document
+            .querySelector(`.list-item[data-id="${selectedPageId}"]`)
+            ?.classList.add("selected");
+        if (selectedCanvasId)
+          document
+            .querySelector(`.list-item[data-id="${selectedCanvasId}"]`)
+            ?.classList.add("selected");
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Flamingo Cloud Socket Tester</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 20px;
+        display: flex;
+        gap: 15px;
+        background-color: #f0f2f5;
+      }
+      .container {
+        flex-basis: 0;
+        flex-grow: 1;
+        border: 1px solid #ccc;
+        padding: 15px;
+        border-radius: 8px;
+        background-color: white;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2,
+      h3,
+      h4 {
+        margin-top: 0;
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      button {
+        padding: 10px 15px;
+        margin-right: 5px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        background-color: #007bff;
+        color: white;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid #eee;
+        margin: 15px 0;
+      }
+      .list-container {
+        border: 1px solid #ccc;
+        padding: 10px;
+        overflow-y: scroll;
+        background-color: #f9f9f9;
+        min-height: 250px;
+      }
+      .log-entry {
+        margin: 0;
+        padding: 5px;
+        border-bottom: 1px solid #eee;
+        font-family: monospace;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .list-item {
+        background-color: white;
+        padding: 8px;
+        border-radius: 4px;
+        margin-bottom: 5px;
+        cursor: pointer;
+        border: 1px solid #ddd;
+      }
+      .list-item.selected {
+        border-color: #007bff;
+        background-color: #e7f3ff;
+        font-weight: bold;
+      }
+      .success {
+        color: green;
+      }
+      .error {
+        color: red;
+      }
+      .info {
+        color: blue;
+      }
+      .event {
+        color: purple;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>1. Connection</h2>
+      <input
+        type="text"
+        id="tokenInput"
+        placeholder="accessToken을 여기에 붙여넣으세요"
+      />
+      <button onclick="connectSocket()">Connect</button>
+      <button onclick="disconnectSocket()" id="disconnectBtn" disabled>
+        Disconnect
+      </button>
+      <input
+        type="text"
+        id="projectIdInput"
+        placeholder="참여할 프로젝트의 ID (UUID)"
+      />
+      <button onclick="joinProject()" id="joinBtn" disabled>
+        Join Project
+      </button>
+      <h3>Connection Logs</h3>
+      <div id="log" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>2. Pages</h2>
+      <div id="page-controls" style="display: none">
+        <input type="text" id="pageNameInput" placeholder="New Page Name" />
+        <button onclick="createPage()">Create Page</button>
+      </div>
+      <div id="pages-list" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>3. Canvases</h2>
+      <div id="canvas-controls" style="display: none">
+        <h4>Create New Canvas</h4>
+        <input type="text" id="canvasNameInput" placeholder="New Canvas Name" />
+        <input
+          type="number"
+          id="canvasWidthInput"
+          value="800"
+          placeholder="Width"
+        />
+        <input
+          type="number"
+          id="canvasHeightInput"
+          value="1200"
+          placeholder="Height"
+        />
+        <select id="canvasUnitInput">
+          <option value="px">px</option>
+        </select>
+        <button onclick="createCanvas()">Create Canvas</button>
+      </div>
+      <div id="canvas-list" class="list-container"></div>
+    </div>
+
+    <div class="container">
+      <h2>4. Layers</h2>
+      <div id="layer-controls" style="display: none">
+        <h4>Create New Layer</h4>
+        <input type="text" id="layerNameInput" placeholder="New Layer Name" />
+        <select id="layerTypeInput">
+          <option value="brush">Brush</option>
+          <option value="text">Text</option>
+        </select>
+        <button onclick="createLayer()">Create Layer</button>
+      </div>
+      <div id="layer-list" class="list-container"></div>
+    </div>
+
+    <script>
+      // 전역 변수
+      let socket;
+      let selectedProjectId = null,
+        selectedPageId = null,
+        selectedCanvasId = null;
+      let allData = { pages: [], canvases: [], layers: [] };
+
+      // UI 요소
+      const ui = {
+        log: document.getElementById("log"),
+        pagesList: document.getElementById("pages-list"),
+        canvasList: document.getElementById("canvas-list"),
+        layerList: document.getElementById("layer-list"),
+        tokenInput: document.getElementById("tokenInput"),
+        projectIdInput: document.getElementById("projectIdInput"),
+        pageNameInput: document.getElementById("pageNameInput"),
+        canvasNameInput: document.getElementById("canvasNameInput"),
+        canvasWidthInput: document.getElementById("canvasWidthInput"),
+        canvasHeightInput: document.getElementById("canvasHeightInput"),
+        canvasUnitInput: document.getElementById("canvasUnitInput"),
+        layerNameInput: document.getElementById("layerNameInput"),
+        layerTypeInput: document.getElementById("layerTypeInput"),
+        pageControls: document.getElementById("page-controls"),
+        canvasControls: document.getElementById("canvas-controls"),
+        layerControls: document.getElementById("layer-controls"),
+        disconnectBtn: document.getElementById("disconnectBtn"),
+        joinBtn: document.getElementById("joinBtn"),
+      };
+
+      function log(message, type = "info") {
+        const p = document.createElement("p");
+        p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        p.className = `log-entry ${type}`;
+        ui.log.appendChild(p);
+        ui.log.scrollTop = ui.log.scrollHeight;
+      }
+
+      // --- Connection Logic ---
+      function connectSocket() {
+        const jwtToken = ui.tokenInput.value.trim();
+        if (!jwtToken) {
+          alert("JWT 토큰을 입력해주세요.");
+          return;
+        }
+        if (socket && socket.connected) {
+          log("Already connected.", "info");
+          return;
+        }
+
+        const SERVER_URL = "ws://3.38.2.73:8080";
+        log(`Attempting to connect to ${SERVER_URL}...`);
+
+        socket = io(SERVER_URL, {
+          auth: { token: jwtToken },
+          transports: ["websocket"],
+        });
+
+        socket.on("connect", () => {
+          log(`Connected successfully! Socket ID: ${socket.id}`, "success");
+          ui.disconnectBtn.disabled = false;
+          ui.joinBtn.disabled = false;
+          setupEventListeners();
+        });
+        socket.on("connect_error", (err) =>
+          log(`Connection Error: ${err.message}`, "error")
+        );
+        socket.on("disconnect", (reason) => {
+          log(`Disconnected. Reason: ${reason}`, "info");
+          ui.disconnectBtn.disabled = true;
+          ui.joinBtn.disabled = true;
+          ui.pageControls.style.display = "none";
+          ui.canvasControls.style.display = "none";
+          ui.layerControls.style.display = "none";
+        });
+      }
+
+      function disconnectSocket() {
+        if (socket) socket.disconnect();
+      }
+
+      // --- Event Listener Setup ---
+      function setupEventListeners() {
+        socket.on("error", (data) =>
+          log(`SERVER ERROR: ${data.message}`, "error")
+        );
+
+        socket.on("initial-data", (data) => {
+          log(
+            `Received initial-data with ${data.pages.length} pages, ${data.canvases.length} canvases, ${data.layers.length} layers.`,
+            "event"
+          );
+          allData = data;
+          renderPages();
+        });
+
+        socket.on("page-created", (newPage) => {
+          log(`Received page-created: ${newPage.name}`, "event");
+          allData.pages.push(newPage);
+          renderPages();
+        });
+
+        socket.on("canvas-created", (newCanvas) => {
+          log(`Received canvas-created: ${newCanvas.name}`, "event");
+          allData.canvases.push(newCanvas);
+          renderCanvases();
+        });
+
+        socket.on("layer-created", (newLayer) => {
+          log(`Received layer-created: ${newLayer.name}`, "event");
+          allData.layers.push(newLayer);
+          renderLayers();
+        });
+      }
+
+      // --- Emit Logic ---
+      function joinProject() {
+        selectedProjectId = ui.projectIdInput.value.trim();
+        if (!selectedProjectId) {
+          alert("프로젝트 ID를 입력해주세요.");
+          return;
+        }
+        log(`Emitting join-project for project: ${selectedProjectId}`);
+        socket.emit("join-project", selectedProjectId);
+        ui.pageControls.style.display = "block";
+      }
+      function createPage() {
+        const pageName = ui.pageNameInput.value.trim();
+        if (!pageName) {
+          alert("페이지 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-page", {
+          projectId: selectedProjectId,
+          name: pageName,
+        });
+        ui.pageNameInput.value = "";
+      }
+      function createCanvas() {
+        const canvasName = ui.canvasNameInput.value.trim();
+        if (!canvasName) {
+          alert("캔버스 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-canvas", {
+          pageId: selectedPageId,
+          projectId: selectedProjectId,
+          name: canvasName,
+          width: parseInt(ui.canvasWidthInput.value, 10),
+          height: parseInt(ui.canvasHeightInput.value, 10),
+          unit: ui.canvasUnitInput.value,
+        });
+        ui.canvasNameInput.value = "";
+      }
+      function createLayer() {
+        const layerName = ui.layerNameInput.value.trim();
+        if (!layerName) {
+          alert("레이어 이름을 입력해주세요.");
+          return;
+        }
+        socket.emit("create-layer", {
+          canvasId: selectedCanvasId,
+          projectId: selectedProjectId,
+          name: layerName,
+          type: ui.layerTypeInput.value,
+        });
+        ui.layerNameInput.value = "";
+      }
+
+      // --- UI Rendering & Selection Logic ---
+      function renderPages() {
+        ui.pagesList.innerHTML = "";
+        allData.pages
+          .sort((a, b) => a.order - b.order)
+          .forEach((page) => {
+            const item = createListItem(page, `Name: ${page.name}`, () =>
+              selectPage(page._id)
+            );
+            ui.pagesList.appendChild(item);
+          });
+        renderCanvases();
+      }
+      function renderCanvases() {
+        ui.canvasList.innerHTML = "";
+        if (!selectedPageId) return;
+        allData.canvases
+          .filter((c) => c.pageId === selectedPageId)
+          .sort((a, b) => a.order - b.order)
+          .forEach((canvas) => {
+            const item = createListItem(canvas, `Name: ${canvas.name}`, () =>
+              selectCanvas(canvas._id)
+            );
+            ui.canvasList.appendChild(item);
+          });
+        renderLayers();
+      }
+      function renderLayers() {
+        ui.layerList.innerHTML = "";
+        if (!selectedCanvasId) return;
+        allData.layers
+          .filter((l) => l.canvasId === selectedCanvasId)
+          .sort((a, b) => a.order - b.order)
+          .forEach((layer) => {
+            const item = createListItem(
+              layer,
+              `[${layer.type}] ${layer.name}`,
+              () => selectLayer(layer._id)
+            );
+            ui.layerList.appendChild(item);
+          });
+      }
+
+      function createListItem(data, text, onClick) {
+        const item = document.createElement("div");
+        item.className = "list-item";
+        item.dataset.id = data._id;
+        item.textContent = text;
+        item.onclick = onClick;
+        return item;
+      }
+
+      function selectPage(id) {
+        selectedPageId = id;
+        selectedCanvasId = null;
+        ui.canvasControls.style.display = "block";
+        ui.layerControls.style.display = "none";
+        updateSelectionUI();
+        renderCanvases();
+      }
+      function selectCanvas(id) {
+        selectedCanvasId = id;
+        ui.layerControls.style.display = "block";
+        updateSelectionUI();
+        renderLayers();
+      }
+      function selectLayer(id) {
+        /* Do nothing for now */
+      }
+
+      function updateSelectionUI() {
+        document
+          .querySelectorAll(".list-item")
+          .forEach((el) => el.classList.remove("selected"));
+        if (selectedPageId) {
+          const el = document.querySelector(
+            `.list-item[data-id="${selectedPageId}"]`
+          );
+          if (el) el.classList.add("selected");
+        }
+        if (selectedCanvasId) {
+          const el = document.querySelector(
+            `.list-item[data-id="${selectedCanvasId}"]`
+          );
+          if (el) el.classList.add("selected");
+        }
+      }
+    </script>
+  </body>
+</html>
