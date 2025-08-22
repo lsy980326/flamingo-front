@@ -10,7 +10,6 @@ import { useSocketStore } from "./useSocketStore";
 
 const SERVER_URL = "http://localhost:8080";
 // const SERVER_URL = "http://3.38.2.73:8080";
-const WEBSOCKET_URL = SERVER_URL.replace("http", "ws");
 
 // 연결 상태 타입
 type YjsConnectionStatus =
@@ -32,18 +31,25 @@ const debouncedSave = debounce((socket: Socket | null, update: Uint8Array) => {
   }
 }, 2000);
 
-// ✨ 1. UserInfo 타입을 명확하게 정의합니다.
 interface UserInfo {
   name: string;
   color: string;
 }
 
-// ✨ 2. Awareness에 저장되는 상태의 실제 구조를 반영하도록 UserState를 수정합니다.
-// user 객체 안에 name과 color가 있고, cursor가 별도로 존재합니다.
 interface UserState {
   user?: UserInfo;
   cursor?: { x: number; y: number };
+  drawingStroke?: {
+    points: { x: number; y: number; pressure?: number }[];
+    color: string;
+    size: number;
+  } | null;
 }
+
+// Yjs 데이터 타입을 명확하게 정의
+// Y.Map<unknown>를 사용하여 any를 제거
+export type YStroke = Y.Map<unknown>;
+export type YPoint = Y.Map<unknown>;
 
 interface YjsState {
   yjsStatus: YjsConnectionStatus;
@@ -52,14 +58,25 @@ interface YjsState {
   webrtcProvider: WebrtcProvider | null;
   layerSocket: Socket | null;
   awareness: Awareness | null;
-  points: Y.Array<Y.Map<any>> | null;
+  // points: Y.Array<Y.Map<any>> | null;
+  strokes: Y.Array<YStroke> | null;
   socketioProvider: SocketIOProvider | null;
   awarenessStates: Map<number, UserState>;
   myInfo: UserInfo | null; // ✨ 3. myInfo 상태를 YjsState에 추가합니다.
+  renderVersion: number;
 
   connectToLayer: (layerId: string) => void;
   disconnectFromLayer: () => void;
-  addPoint: (x: number, y: number) => void;
+  // addPoint: (x: number, y: number) => void;
+  startStroke: (
+    x: number,
+    y: number,
+    pressure: number,
+    color: string,
+    size: number
+  ) => void;
+  addPointToStroke: (x: number, y: number, pressure: number) => void;
+  endStroke: () => void;
   setLocalUserName: (name: string) => void;
   updateMyCursor: (cursor: { x: number; y: number } | null) => void; // ✨ null 허용
   setMyInfo: (info: UserInfo) => void;
@@ -72,10 +89,12 @@ export const useYjsStore = create<YjsState>((set, get) => ({
   webrtcProvider: null,
   layerSocket: null,
   awareness: null,
-  points: null,
+  // points: null,
   socketioProvider: null,
   awarenessStates: new Map(),
   myInfo: null, // ✨ 4. myInfo 상태를 초기화합니다.
+  strokes: null,
+  renderVersion: 0,
 
   connectToLayer: (layerId) => {
     const { yjsStatus, currentLayerId } = get();
@@ -104,7 +123,7 @@ export const useYjsStore = create<YjsState>((set, get) => ({
 
     const doc = new Y.Doc();
     const namespace = `/layer-${layerId}`;
-    const signalingUrl = `${WEBSOCKET_URL}/webrtc?token=${token}`;
+    // const signalingUrl = `${WEBSOCKET_URL}/webrtc?token=${token}`;
 
     const newLayerSocket = io(`${SERVER_URL}${namespace}`, {
       auth: { token },
@@ -116,6 +135,9 @@ export const useYjsStore = create<YjsState>((set, get) => ({
     // 서버로부터 업데이트를 받았을 때 처리하는 리스너
     newLayerSocket.on("layer-update", (update: ArrayBuffer) => {
       Y.applyUpdate(doc, new Uint8Array(update));
+      const strokes = doc.getArray<YStroke>("strokes");
+      // eslint-disable-next-line no-console
+      console.log("[Yjs] Strokes updated from server:", strokes.toJSON());
       // logWithTime(`[Yjs] Received and applied update from server.`);
     });
 
@@ -123,6 +145,7 @@ export const useYjsStore = create<YjsState>((set, get) => ({
     doc.on("update", (update: Uint8Array) => {
       newLayerSocket.emit("layer-update", update);
       debouncedSave(newLayerSocket, Y.encodeStateAsUpdate(doc));
+      set((state) => ({ renderVersion: state.renderVersion + 1 }));
     });
 
     newLayerSocket.on("connect", () => {
@@ -152,6 +175,9 @@ export const useYjsStore = create<YjsState>((set, get) => ({
           if (docUpdate) {
             Y.applyUpdate(doc, new Uint8Array(docUpdate));
             logWithTime(`[Yjs] 📄 Doc initialized from server data.`);
+            const strokes = doc.getArray<YStroke>("strokes");
+            // eslint-disable-next-line no-console
+            console.log("[Yjs] Initial strokes loaded:", strokes.toJSON());
           } else {
             logWithTime(`[Yjs] 📄 No existing data on server. Starting fresh.`);
           }
@@ -192,12 +218,14 @@ export const useYjsStore = create<YjsState>((set, get) => ({
             set({ awarenessStates: new Map(awareness.getStates()) });
           });
 
+          const strokes = doc.getArray<YStroke>("strokes");
           set({
             webrtcProvider,
             socketioProvider,
             awareness: awareness,
             awarenessStates: new Map(awareness.getStates()),
-            points: doc.getArray<Y.Map<any>>("points"),
+            // points: doc.getArray<Y.Map<any>>("points"),
+            strokes,
             yjsStatus: "connected",
           });
         }
@@ -235,20 +263,104 @@ export const useYjsStore = create<YjsState>((set, get) => ({
       webrtcProvider: null,
       layerSocket: null,
       awareness: null,
-      points: null,
+      // points: null,
       socketioProvider: null,
     });
     logWithTime("[Yjs] Disconnected from layer and cleaned up resources.");
   },
 
-  addPoint: (x: number, y: number) => {
-    const { points } = get();
-    if (points) {
-      const point = new Y.Map<any>();
-      point.set("x", x);
-      point.set("y", y);
-      points.push([point]);
+  // addPoint: (x: number, y: number) => {
+  //   const { points } = get();
+  //   if (points) {
+  //     const point = new Y.Map<any>();
+  //     point.set("x", x);
+  //     point.set("y", y);
+  //     points.push([point]);
+  //   }
+  // },
+
+  startStroke: (x, y, pressure, color, size) => {
+    const { ydoc, strokes, awareness } = get();
+    if (!ydoc || !strokes) return;
+
+    ydoc.transact(() => {
+      // 1. 스트로크 전체를 나타낼 Y.Map 생성
+      const newStroke = new Y.Map<unknown>();
+
+      // 2. 점들을 담을 Y.Array 생성
+      const points = new Y.Array<YPoint>();
+
+      // 3. 첫 번째 점을 나타낼 Y.Map 생성
+      const firstPoint = new Y.Map<unknown>();
+      firstPoint.set("x", x);
+      firstPoint.set("y", y);
+      firstPoint.set("pressure", pressure);
+
+      // 4. 점 배열에 첫 번째 점 추가
+      points.push([firstPoint]);
+
+      // 5. 스트로크 맵에 속성 및 점 배열 설정
+      newStroke.set("points", points);
+      newStroke.set("color", color);
+      newStroke.set("size", size);
+
+      // 6. 전체 스트로크 배열에 새로운 스트로크 추가
+      strokes.push([newStroke]);
+
+      // // --- ▼▼▼ 로그 추가 ▼▼▼ ---
+      // console.log("--- startStroke ---");
+      // // 1. strokes는 Y.Array 객체입니다.
+      // console.log("Strokes (Y.Array):", strokes);
+      // // 2. toJSON()으로 일반 JS 객체/배열로 변환하여 내용을 확인합니다.
+      // console.log("Strokes (as JSON):", strokes.toJSON());
+      // // 3. 현재 생성된 스트로크의 내용
+      // console.log("Current Stroke (as JSON):", newStroke.toJSON());
+      // // --- ▲▲▲ 로그 추가 끝 ▲▲▲ ---
+
+      // 7. Awareness 업데이트 (toJSON() 사용 가능)
+      awareness?.setLocalStateField("drawingStroke", newStroke.toJSON());
+    });
+  },
+
+  addPointToStroke: (x, y, pressure) => {
+    const { strokes, awareness } = get();
+    // strokes 배열이 비어있으면 아무것도 하지 않음 (startStroke가 먼저 호출되어야 함)
+    if (!strokes || strokes.length === 0) return;
+
+    // 1. 현재 그리고 있는 마지막 스트로크(Y.Map)를 가져옴
+    const currentStroke = strokes.get(strokes.length - 1);
+    // 2. 스트로크 안의 점 배열(Y.Array)을 가져옴
+    const points = currentStroke.get("points") as Y.Array<YPoint>;
+
+    // 3. 새로 추가할 점(Y.Map) 생성
+    const newPoint = new Y.Map<unknown>();
+    newPoint.set("x", x);
+    newPoint.set("y", y);
+    newPoint.set("pressure", pressure);
+
+    // 4. 점 배열에 새로운 점 추가
+    points.push([newPoint]);
+
+    //  // --- ▼▼▼ 로그 추가 ▼▼▼ ---
+    //  console.log("--- addPointToStroke ---");
+    //  // 1. 현재 스트로크의 `points`는 Y.Array 객체입니다.
+    //  console.log("Current Points (Y.Array):", points);
+    //  // 2. toJSON()으로 변환하여 실제 점들이 어떻게 쌓이는지 확인합니다.
+    //  console.log("Current Points (as JSON):", points.toJSON());
+    //  // --- ▲▲▲ 로그 추가 끝 ▲▲▲ ---
+
+    // 5. Awareness 업데이트
+    awareness?.setLocalStateField("drawingStroke", currentStroke.toJSON());
+  },
+
+  endStroke: () => {
+    const { strokes, awareness } = get();
+    if (strokes && strokes.length > 0) {
+      const lastStroke = strokes.get(strokes.length - 1);
+      // eslint-disable-next-line no-console
+      console.log("[Yjs] Stroke ended:", lastStroke.toJSON());
     }
+    awareness?.setLocalStateField("drawingStroke", null);
   },
 
   setLocalUserName: (name) => {

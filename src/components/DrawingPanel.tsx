@@ -4,6 +4,7 @@ import { useSocketStore } from "../store/useSocketStore";
 import * as Y from "yjs";
 import { useUserStore } from "../store/useUserStore"; // 사용자 이름 가져오기
 import { CollaboratorCursors } from "./CollaboratorCursors"; // 커서 렌더링 컴포넌트
+import { PixiCanvas } from "./PixiCanvas";
 
 interface Point {
   x: number;
@@ -41,21 +42,11 @@ const CanvasOverlay = ({ status }: { status: string }) => {
 };
 
 export const DrawingPanel = () => {
-  const {
-    points,
-    addPoint,
-    connectToLayer,
-    disconnectFromLayer,
-    yjsStatus,
-    setLocalUserName,
-    setMyInfo,
-    updateMyCursor,
-    myInfo,
-  } = useYjsStore();
+  const { connectToLayer, disconnectFromLayer, yjsStatus, setMyInfo } =
+    useYjsStore();
 
   const { selectedLayerId } = useSocketStore();
   const userName = useUserStore((state) => state.name);
-  const [renderedPoints, setRenderedPoints] = useState<Point[]>([]);
 
   // ✨ Layer ID가 변경될 때마다 Yjs 연결을 관리하는 핵심 로직
   useEffect(() => {
@@ -67,27 +58,6 @@ export const DrawingPanel = () => {
       disconnectFromLayer();
     };
   }, [selectedLayerId, connectToLayer, disconnectFromLayer]);
-
-  // Yjs의 points 배열이 변경될 때마다 React의 state를 업데이트하여 리렌더링합니다.
-  useEffect(() => {
-    if (points instanceof Y.Array) {
-      const onPointsChange = () => {
-        setRenderedPoints(points.toArray().map((p) => p.toJSON() as Point));
-      };
-
-      // 초기 렌더링 및 변경 감지
-      points.observe(onPointsChange);
-      onPointsChange();
-
-      // cleanup: 컴포넌트가 사라질 때 observe를 해제하여 메모리 누수를 방지합니다.
-      return () => {
-        points.unobserve(onPointsChange);
-      };
-    } else {
-      // points가 null이면 (연결 해제 시) 렌더링된 포인트도 비웁니다.
-      setRenderedPoints([]);
-    }
-  }, [points]);
 
   useEffect(() => {
     if (yjsStatus === "connected" && userName) {
@@ -101,42 +71,12 @@ export const DrawingPanel = () => {
     }
   }, [yjsStatus, userName, setMyInfo]);
 
-  // console.log(useYjsStore.getState().awareness?.getLocalState());
-
-  const handleCanvasClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (yjsStatus !== "connected") {
-      console.warn("Cannot draw, Yjs is not fully connected.");
-      return;
-    }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    addPoint(x, y);
-  };
-
-  // 마우스 움직일 때 커서 위치 전송
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (yjsStatus !== "connected" || !myInfo) return; // myInfo가 설정되지 않았다면 전송하지 않음
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    updateMyCursor({ x, y });
-  };
-
-  const handlePointerLeave = () => {
-    if (yjsStatus !== "connected") return;
-    // updateMyCursor(null as any);
-  };
-
   return (
     <div className={`panel drawing-panel ${selectedLayerId ? "visible" : ""}`}>
       <h2>Drawing Canvas {selectedLayerId && `(Layer: ${selectedLayerId})`}</h2>
 
       {selectedLayerId ? (
         <div
-          onClick={handleCanvasClick}
-          onPointerMove={handlePointerMove} // ✨ 이벤트 핸들러 연결
-          onPointerLeave={handlePointerLeave} // ✨ 이벤트 핸들러 연결
           style={{
             position: "relative",
             width: "100%",
@@ -149,21 +89,7 @@ export const DrawingPanel = () => {
         >
           {/* 연결 상태에 따라 오버레이를 표시합니다. */}
           <CanvasOverlay status={yjsStatus} />
-          {renderedPoints.map((p, i) => (
-            <div
-              key={i}
-              style={{
-                position: "absolute",
-                width: "10px",
-                height: "10px",
-                backgroundColor: "red",
-                borderRadius: "50%",
-                left: `${p.x}px`,
-                top: `${p.y}px`,
-                transform: "translate(-50%, -50%)",
-              }}
-            />
-          ))}
+          <PixiCanvas /> {/* 이 부분은 변경 없음 */}
           {/* ✨ 2. 다른 사용자들의 커서 렌더링 컴포넌트 추가 */}
           <CollaboratorCursors />
         </div>

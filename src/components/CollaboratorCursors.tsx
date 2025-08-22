@@ -30,6 +30,7 @@ export const CollaboratorCursors = () => {
             top: `${state.cursor.y}px`,
             transition: "left 0.1s, top 0.1s", // 부드러운 움직임
             zIndex: 9999,
+            pointerEvents: "none",
           }}
         >
           {/* SVG로 만든 커서 아이콘 */}
