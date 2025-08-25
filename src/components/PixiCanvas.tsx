@@ -1,69 +1,132 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Application, extend } from "@pixi/react";
 import * as PIXI from "pixi.js";
 import * as Y from "yjs";
 import { useYjsStore } from "../store/useYjsStore";
+import { useSocketStore } from "../store/useSocketStore"; // 메타데이터를 위한 스토어
+import type { Layer } from "../types";
 
+// Pixi 객체들을 React 컴포넌트로 사용할 수 있도록 확장
 extend({ Container: PIXI.Container, Graphics: PIXI.Graphics });
 
-const yStrokeToObj = (stroke: Y.Map<unknown>) =>
-  stroke.toJSON() as {
-    points: { x: number; y: number; pressure?: number }[];
-    color: string;
-    size: number;
-  };
+// Y.Map을 일반 스트로크 객체로 변환하는 헬퍼 함수
+const yStrokeToObj = (stroke: Y.Map<unknown>) => {
+  return stroke.toJSON() as StrokeShape;
+};
 
-const CANVAS_SIZE = 1200;
+type StrokePoint = { x: number; y: number; pressure?: number };
+type StrokeShape = { points: StrokePoint[]; color: string; size: number };
+interface ExtendedLayerMeta extends Layer {
+  opacity?: number;
+  isVisible?: boolean;
+}
 
+// 모든 레이어의 그림 데이터를 렌더링하는 컴포넌트
 const DrawingLayer = () => {
-  const strokes = useYjsStore((state) => state.strokes);
+  // 1. Yjs로부터 실시간 그림 데이터(Y.Map)를 가져옴
+  const yjsLayers = useYjsStore((state) => state.layers);
   const awarenessStates = useYjsStore((state) => state.awarenessStates);
-  const myClientId = useYjsStore(
-    (state) => state.webrtcProvider?.awareness.clientID
-  );
-  const renderVersion = useYjsStore((state) => state.renderVersion);
+  const myClientId = useYjsStore((state) => state.awareness?.clientID);
+
+  // 2. 메인 소켓으로부터 구조/속성 데이터(메타데이터)를 가져옴
+  const { selectedCanvasId, allData } = useSocketStore();
+  const layerMetadatas = allData.layers as unknown as ExtendedLayerMeta[];
+
+  // 3. Yjs 데이터가 변경될 때 리렌더링을 트리거하기 위한 상태
+  const [renderVersion, setRenderVersion] = useState(0);
+
+  useEffect(() => {
+    if (!yjsLayers) return;
+    const observer = () => setRenderVersion((v) => v + 1);
+    // yjsLayers 맵 자체 또는 하위 내용이 변경될 때 강제로 리렌더링
+    yjsLayers.observeDeep(observer);
+    return () => yjsLayers.unobserveDeep(observer);
+  }, [yjsLayers]);
 
   const draw = useCallback(
     (g: PIXI.Graphics) => {
       g.clear();
-      // debug: count strokes
-      // eslint-disable-next-line no-console
-      console.debug("[Pixi] draw called");
 
-      const allStrokes = strokes ? strokes.toArray().map(yStrokeToObj) : [];
-      // eslint-disable-next-line no-console
-      console.debug("[Pixi] strokes count:", allStrokes.length);
+      if (!yjsLayers || !selectedCanvasId) return;
 
-      allStrokes.forEach((stroke) => {
-        if (!stroke.points || stroke.points.length < 1) return;
-        const color = parseInt(stroke.color.replace("#", ""), 16);
-        g.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          g.lineTo(stroke.points[i].x, stroke.points[i].y);
-        }
-        g.stroke({ width: stroke.size, color, alpha: 1 });
+      // 현재 캔버스에 속한 레이어 메타데이터만 필터링하고 순서대로 정렬
+      const targetLayersMeta = layerMetadatas
+        .filter((meta) => meta.canvasId === selectedCanvasId)
+        .sort((a, b) => a.order - b.order);
+
+      // 4. 모든 레이어를 순서대로 렌더링
+      targetLayersMeta.forEach((meta) => {
+        const isVisible = meta.isVisible ?? true;
+        if (!isVisible) return;
+
+        const layerData = yjsLayers.get(meta._id); // Y.Doc에서 해당 레이어의 그림 데이터(Y.Map)를 찾음
+        if (!layerData) return;
+
+        const strokesArray = layerData.get("strokes") as
+          | Y.Array<Y.Map<unknown>>
+          | undefined;
+        const allStrokes = strokesArray
+          ? strokesArray.toArray().map(yStrokeToObj)
+          : [];
+
+        // 레이어 속성 적용
+        const opacity = meta.opacity ?? 100;
+        g.alpha = opacity / 100;
+
+        // 이 레이어의 모든 스트로크 그리기
+        allStrokes.forEach((stroke) => {
+          if (!stroke.points || stroke.points.length < 1) return;
+          const color = parseInt(stroke.color.replace("#", ""), 16);
+
+          g.setStrokeStyle({ width: stroke.size, color, alpha: g.alpha });
+          g.beginPath();
+          g.moveTo(stroke.points[0].x, stroke.points[0].y);
+
+          for (let i = 1; i < stroke.points.length; i++) {
+            g.lineTo(stroke.points[i].x, stroke.points[i].y);
+          }
+
+          g.stroke();
+        });
       });
 
+      // 5. 다른 사용자들이 현재 그리고 있는 스트로크 그리기 (Awareness)
       awarenessStates.forEach((state, clientId) => {
         if (clientId !== myClientId && state.user && state.drawingStroke) {
-          const stroke = state.drawingStroke;
+          const stroke = state.drawingStroke as StrokeShape;
           if (!stroke.points || stroke.points.length < 1) return;
-          const color = parseInt(state.user.color.replace("#", ""), 16);
+          const color = parseInt(state.user!.color.replace("#", ""), 16);
+          g.setStrokeStyle({ width: stroke.size, color, alpha: 0.7 });
+          g.beginPath();
           g.moveTo(stroke.points[0].x, stroke.points[0].y);
           for (let i = 1; i < stroke.points.length; i++) {
             g.lineTo(stroke.points[i].x, stroke.points[i].y);
           }
-          g.stroke({ width: stroke.size, color, alpha: 0.7 });
+          g.stroke();
         }
       });
     },
-    [strokes, awarenessStates, myClientId, renderVersion]
+    [
+      yjsLayers,
+      layerMetadatas,
+      selectedCanvasId,
+      awarenessStates,
+      myClientId,
+      renderVersion,
+    ]
   );
 
   return <pixiGraphics draw={draw} />;
 };
 
-const DrawingContainer = () => {
+// 마우스/포인터 이벤트를 처리하는 컨테이너 컴포넌트
+const DrawingContainer = ({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}) => {
   const {
     yjsStatus,
     startStroke,
@@ -71,50 +134,42 @@ const DrawingContainer = () => {
     endStroke,
     updateMyCursor,
   } = useYjsStore();
+  const { selectedLayerId } = useSocketStore(); // 현재 활성화된 레이어 ID
   const [isDrawing, setIsDrawing] = useState(false);
-  const [cursor, setCursor] = useState<string>("auto");
 
   const handlePointerDown = (e: PIXI.FederatedPointerEvent) => {
-    if (yjsStatus !== "connected") return;
-    setCursor("crosshair");
+    if (yjsStatus !== "connected" || !selectedLayerId) return;
     setIsDrawing(true);
     const { x, y } = e.global;
-    const pressure = e.pressure || 0.5;
-    // eslint-disable-next-line no-console
-    console.debug("[Pixi] pointerdown", { x, y, pressure });
-    updateMyCursor({ x, y });
-    startStroke(x, y, pressure, "#000000", 5);
+    // ✨ Yjs 액션 호출 시 selectedLayerId 전달
+    startStroke(selectedLayerId, x, y, e.pressure || 0.5, "#000000", 5);
   };
 
   const handlePointerMove = (e: PIXI.FederatedPointerEvent) => {
     if (yjsStatus !== "connected") return;
     const { x, y } = e.global;
-    const pressure = e.pressure || 0.5;
-    // eslint-disable-next-line no-console
-    console.debug("[Pixi] pointermove", { x, y, pressure });
     updateMyCursor({ x, y });
-    if (isDrawing) addPointToStroke(x, y, pressure);
+    if (isDrawing && selectedLayerId) {
+      // ✨ Yjs 액션 호출 시 selectedLayerId 전달
+      addPointToStroke(selectedLayerId, x, y, e.pressure || 0.5);
+    }
   };
 
   const handlePointerUp = () => {
     if (yjsStatus !== "connected") return;
-    // eslint-disable-next-line no-console
-    console.debug("[Pixi] pointerup");
-    setCursor("auto");
     setIsDrawing(false);
     endStroke();
   };
 
   const handlePointerOut = () => {
-    if (yjsStatus !== "connected") return;
     updateMyCursor(null);
   };
 
   return (
     <pixiContainer
       eventMode="static"
-      hitArea={new PIXI.Rectangle(0, 0, CANVAS_SIZE, CANVAS_SIZE)}
-      cursor={cursor}
+      hitArea={new PIXI.Rectangle(0, 0, width, height)}
+      cursor={isDrawing ? "crosshair" : "auto"}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -126,15 +181,19 @@ const DrawingContainer = () => {
   );
 };
 
-export const PixiCanvas = () => {
+// 최상위 Pixi 애플리케이션 컴포넌트
+export const PixiCanvas = ({
+  width = 1200,
+  height = 1200,
+}: {
+  width?: number;
+  height?: number;
+}) => {
   return (
-    <Application
-      width={CANVAS_SIZE}
-      height={CANVAS_SIZE}
-      background={0xffffff}
-      antialias
-    >
-      <DrawingContainer />
+    <Application width={width} height={height} background={0xffffff} antialias>
+      <DrawingContainer width={width} height={height} />
     </Application>
   );
 };
+
+export default PixiCanvas;

@@ -1,100 +1,98 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { useYjsStore } from "../store/useYjsStore";
 import { useSocketStore } from "../store/useSocketStore";
-import * as Y from "yjs";
 import { useUserStore } from "../store/useUserStore"; // 사용자 이름 가져오기
 import { CollaboratorCursors } from "./CollaboratorCursors"; // 커서 렌더링 컴포넌트
 import { PixiCanvas } from "./PixiCanvas";
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-// 연결 상태에 따라 다른 메시지를 보여주는 헬퍼 컴포넌트
-const CanvasOverlay = ({ status }: { status: string }) => {
-  const styles: React.CSSProperties = {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(255, 255, 255, 0.8)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "1.2em",
-    color: "#555",
-    zIndex: 10,
-    borderRadius: "inherit",
-  };
-
-  // 연결 완료 시에는 아무것도 보여주지 않습니다.
-  if (status === "connected") return null;
-
-  let message = "...";
-  if (status === "connecting") message = "Connecting to layer...";
-  if (status === "error")
-    message = "Connection failed. Please check the console.";
-  if (status === "disconnected") message = "Disconnected.";
-
-  return <div style={styles}>{message}</div>;
-};
-
 export const DrawingPanel = () => {
-  const { connectToLayer, disconnectFromLayer, yjsStatus, setMyInfo } =
-    useYjsStore();
-
-  const { selectedLayerId } = useSocketStore();
+  // ✨ 캔버스 ID와 활성 레이어 ID를 가져옴
+  const { selectedCanvasId, selectedLayerId } = useSocketStore();
+  const {
+    connectToCanvas,
+    disconnectFromCanvas,
+    yjsStatus,
+    setMyInfo,
+    updateMyCursor,
+    startStroke,
+    addPointToStroke,
+    endStroke,
+  } = useYjsStore();
   const userName = useUserStore((state) => state.name);
 
-  // ✨ Layer ID가 변경될 때마다 Yjs 연결을 관리하는 핵심 로직
+  // 캔버스 ID가 변경되면 Yjs 연결을 관리
   useEffect(() => {
-    if (selectedLayerId) {
-      connectToLayer(selectedLayerId);
+    if (selectedCanvasId) {
+      connectToCanvas(selectedCanvasId);
     }
-    // 컴포넌트가 사라지거나 selectedLayerId가 바뀌기 전에 항상 연결을 해제합니다.
     return () => {
-      disconnectFromLayer();
+      disconnectFromCanvas();
     };
-  }, [selectedLayerId, connectToLayer, disconnectFromLayer]);
+  }, [selectedCanvasId, connectToCanvas, disconnectFromCanvas]);
 
+  // Yjs 연결 후 내 정보 설정
   useEffect(() => {
     if (yjsStatus === "connected" && userName) {
-      console.log(`[Awareness] Setting my info with name: ${userName}`);
-      // 랜덤 색상 지정
       const colors = ["#ff0000", "#0000ff", "#00ff00", "#ffa500", "#800080"];
       const color = colors[Math.floor(Math.random() * colors.length)];
-
-      // setMyInfo 액션을 통해 스토어와 awareness에 내 정보 저장
       setMyInfo({ name: userName, color });
     }
   }, [yjsStatus, userName, setMyInfo]);
 
-  return (
-    <div className={`panel drawing-panel ${selectedLayerId ? "visible" : ""}`}>
-      <h2>Drawing Canvas {selectedLayerId && `(Layer: ${selectedLayerId})`}</h2>
+  // --- 마우스/포인터 이벤트 핸들러들 ---
+  const isDrawing = React.useRef(false);
 
-      {selectedLayerId ? (
+  const getPointerPos = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (yjsStatus !== "connected" || !selectedLayerId) return;
+    isDrawing.current = true;
+    const { x, y } = getPointerPos(e);
+    // TODO: 브러시 색상/크기는 UI에서 선택한 값으로 변경해야 함
+    startStroke(selectedLayerId, x, y, e.pressure, "#000000", 5);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const { x, y } = getPointerPos(e);
+    updateMyCursor({ x, y }); // 커서 위치는 항상 업데이트
+    if (!isDrawing.current || yjsStatus !== "connected" || !selectedLayerId)
+      return;
+    addPointToStroke(selectedLayerId, x, y, e.pressure);
+  };
+
+  const handlePointerUp = () => {
+    if (yjsStatus !== "connected") return;
+    isDrawing.current = false;
+    endStroke();
+  };
+
+  return (
+    <div className={`panel drawing-panel ${selectedCanvasId ? "visible" : ""}`}>
+      <h2>
+        Drawing Canvas {selectedCanvasId && `(Canvas: ${selectedCanvasId})`}
+      </h2>
+      {selectedCanvasId ? (
         <div
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
           style={{
             position: "relative",
-            width: "100%",
-            height: "calc(100% - 50px)",
-            border: "2px solid #ccc",
-            borderRadius: "8px",
-            cursor: yjsStatus === "connected" ? "crosshair" : "not-allowed",
-            backgroundColor: "#fff",
+            width: "800px",
+            height: "1200px",
+            border: "1px solid black",
           }}
         >
-          {/* 연결 상태에 따라 오버레이를 표시합니다. */}
-          <CanvasOverlay status={yjsStatus} />
-          <PixiCanvas /> {/* 이 부분은 변경 없음 */}
-          {/* ✨ 2. 다른 사용자들의 커서 렌더링 컴포넌트 추가 */}
+          <PixiCanvas width={800} height={1200} />
           <CollaboratorCursors />
+          {/* CanvasOverlay 컴포넌트도 필요 시 추가 */}
         </div>
       ) : (
-        <p>Select a layer from the 'Layers' panel to start drawing.</p>
+        <p>Select a canvas to start drawing.</p>
       )}
     </div>
   );
