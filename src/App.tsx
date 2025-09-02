@@ -3,7 +3,7 @@ import "./App.css";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { PagesPanel } from "./components/PagesPanel";
 import { CanvasesPanel } from "./components/CanvasesPanel";
-import { LayersPanel } from "./components/LayersPanel";
+import LayersPanel from "./components/LayersPanel";
 import { DrawingPanel } from "./components/DrawingPanel";
 import { useUserStore } from "./store/useUserStore";
 import { useSocketStore } from "./store/useSocketStore";
