@@ -7,7 +7,7 @@ import { useSocketStore } from "../store/useSocketStore"; // 메타데이터를 
 import type { Layer } from "../types";
 
 // Pixi 객체들을 React 컴포넌트로 사용할 수 있도록 확장
-extend({ Container: PIXI.Container, Graphics: PIXI.Graphics });
+extend({ Container: PIXI.Container, Graphics: PIXI.Graphics, Text: PIXI.Text });
 
 // Y.Map을 일반 스트로크 객체로 변환하는 헬퍼 함수
 const yStrokeToObj = (stroke: Y.Map<unknown>) => {
@@ -42,8 +42,23 @@ const DrawingLayer = ({
   );
 
   // 2. 메인 소켓으로부터 구조/속성 데이터(메타데이터)를 가져옴
-  const { selectedCanvasId, allData } = useSocketStore();
-  const layerMetadatas = allData.layers as unknown as ExtendedLayerMeta[];
+  const { selectedCanvasId, projectData } = useSocketStore();
+
+  // 계층구조 데이터에서 레이어 메타데이터 추출
+  const layerMetadatas =
+    projectData?.pages?.flatMap(
+      (page) =>
+        page.canvases?.flatMap(
+          (canvas) =>
+            canvas.layers?.map((layer) => ({
+              ...layer,
+              canvasId: canvas.id,
+              _id: layer.id,
+              isVisible: layer.visible,
+              opacity: layer.opacity,
+            })) || []
+        ) || []
+    ) || [];
 
   // 3. Yjs 데이터가 변경될 때 리렌더링을 트리거하기 위한 상태
   const [renderVersion, setRenderVersion] = useState(0);
@@ -72,9 +87,6 @@ const DrawingLayer = ({
 
       if (!selectedCanvasId || layerStates.size === 0) return;
 
-      // forceUpdate 값이 변경되면 강제로 다시 그리기
-      console.log(`[PixiCanvas] Drawing with forceUpdate: ${forceUpdate}`);
-
       // 현재 캔버스에 속한 레이어 메타데이터만 필터링하고 순서대로 정렬
       const targetLayersMeta = layerMetadatas
         .filter((meta) => meta.canvasId === selectedCanvasId)
@@ -88,34 +100,66 @@ const DrawingLayer = ({
         // 레이어가 숨겨져 있으면 건너뛰기
         if (!isVisible || !isUserVisible) return;
 
-        // 해당 레이어의 Yjs 상태가 있는지 확인
-        const layerState = layerStates.get(meta._id);
-        if (!layerState) return; // 아직 연결되지 않은 레이어는 건너뛰기
-
-        const strokesArray = layerState.strokes;
-        const allStrokes = strokesArray
-          ? strokesArray.toArray().map(yStrokeToObj)
-          : [];
-
         // 레이어 속성 적용
         const opacity = meta.opacity ?? 100;
         g.alpha = opacity / 100;
 
-        // 이 레이어의 모든 스트로크 그리기
-        allStrokes.forEach((stroke) => {
-          if (!stroke.points || stroke.points.length < 1) return;
-          const color = parseInt(stroke.color.replace("#", ""), 16);
+        // 텍스트 레이어인 경우 텍스트 렌더링
+        if (meta.type === "text" && meta.layer_data?.textObjects) {
+          // 텍스트는 별도의 Text 컴포넌트로 렌더링하므로 여기서는 스킵
+          // 실제 텍스트 렌더링은 TextLayer 컴포넌트에서 처리
+        }
 
-          g.setStrokeStyle({ width: stroke.size, color, alpha: g.alpha });
-          g.beginPath();
-          g.moveTo(stroke.points[0].x, stroke.points[0].y);
+        // 브러시 레이어인 경우 스트로크 렌더링
+        if (meta.type === "brush") {
+          // Yjs 데이터가 있으면 Yjs에서 가져오기
+          const layerState = layerStates.get(meta._id);
+          if (layerState) {
+            const strokesArray = layerState.strokes;
+            const allStrokes = strokesArray
+              ? strokesArray.toArray().map(yStrokeToObj)
+              : [];
 
-          for (let i = 1; i < stroke.points.length; i++) {
-            g.lineTo(stroke.points[i].x, stroke.points[i].y);
+            // 이 레이어의 모든 스트로크 그리기
+            allStrokes.forEach((stroke) => {
+              if (!stroke.points || stroke.points.length < 1) return;
+              const color = parseInt(stroke.color.replace("#", ""), 16);
+
+              g.setStrokeStyle({ width: stroke.size, color, alpha: g.alpha });
+              g.beginPath();
+              g.moveTo(stroke.points[0].x, stroke.points[0].y);
+
+              for (let i = 1; i < stroke.points.length; i++) {
+                g.lineTo(stroke.points[i].x, stroke.points[i].y);
+              }
+
+              g.stroke();
+            });
+          } else if (meta.layer_data?.brushStrokes) {
+            // Yjs 데이터가 없으면 JSON 데이터에서 가져오기
+            meta.layer_data.brushStrokes.forEach((stroke: any) => {
+              if (!stroke.points || stroke.points.length < 1) return;
+              const color = parseInt(
+                stroke.brushSettings?.color?.replace("#", "") || "000000",
+                16
+              );
+
+              g.setStrokeStyle({
+                width: stroke.brushSettings?.radius || 5,
+                color,
+                alpha: g.alpha,
+              });
+              g.beginPath();
+              g.moveTo(stroke.points[0].x, stroke.points[0].y);
+
+              for (let i = 1; i < stroke.points.length; i++) {
+                g.lineTo(stroke.points[i].x, stroke.points[i].y);
+              }
+
+              g.stroke();
+            });
           }
-
-          g.stroke();
-        });
+        }
       });
 
       // 5. 다른 사용자들이 현재 그리고 있는 스트로크 그리기 (Awareness)
@@ -150,6 +194,85 @@ const DrawingLayer = ({
   );
 
   return <pixiGraphics draw={draw} />;
+};
+
+// 텍스트 렌더링을 위한 별도 컴포넌트
+const TextLayer = ({
+  layerVisibility,
+}: {
+  layerVisibility: Record<string, boolean>;
+}) => {
+  const { selectedCanvasId, projectData } = useSocketStore();
+  const [textVersion, setTextVersion] = useState(0);
+
+  // 텍스트 데이터 변경 감지
+  useEffect(() => {
+    setTextVersion((v) => v + 1);
+  }, [projectData]);
+
+  // 계층구조 데이터에서 레이어 메타데이터 추출
+  const layerMetadatas =
+    projectData?.pages?.flatMap(
+      (page) =>
+        page.canvases?.flatMap(
+          (canvas) =>
+            canvas.layers?.map((layer) => ({
+              ...layer,
+              canvasId: canvas.id,
+              _id: layer.id,
+              isVisible: layer.visible,
+              opacity: layer.opacity,
+            })) || []
+        ) || []
+    ) || [];
+
+  if (!selectedCanvasId) return null;
+
+  // 현재 캔버스에 속한 텍스트 레이어만 필터링
+  const textLayers = layerMetadatas.filter(
+    (meta) =>
+      meta.canvasId === selectedCanvasId &&
+      meta.type === "text" &&
+      meta.isVisible &&
+      layerVisibility[meta._id] !== false
+  );
+
+  // 디버깅 로그
+  console.log("TextLayer 렌더링:", {
+    selectedCanvasId,
+    textLayersCount: textLayers.length,
+    textLayers: textLayers.map((meta) => ({
+      id: meta._id,
+      name: meta.name,
+      textObjectsCount: meta.layer_data?.textObjects?.length || 0,
+      textObjects: meta.layer_data?.textObjects || [],
+    })),
+  });
+
+  return (
+    <>
+      {textLayers.map((meta) => {
+        if (!meta.layer_data?.textObjects) return null;
+
+        return meta.layer_data.textObjects.map(
+          (textObj: any, index: number) => (
+            <pixiText
+              key={`${meta._id}-${textObj.id || index}-${textVersion}`}
+              text={textObj.content || "새 텍스트"}
+              x={textObj.position?.x || 100}
+              y={textObj.position?.y || 100}
+              style={{
+                fontSize: textObj.style?.size || 16,
+                fill: textObj.style?.color || "#000000",
+                fontFamily: textObj.style?.font || "Arial",
+                alpha: (meta.opacity || 100) / 100,
+              }}
+            />
+          )
+        );
+      })}
+    </>
+  );
 };
 
 // 마우스/포인터 이벤트를 처리하는 컨테이너 컴포넌트
@@ -218,6 +341,7 @@ const DrawingContainer = ({
       onPointerOut={handlePointerOut}
     >
       <DrawingLayer layerVisibility={layerVisibility} />
+      <TextLayer layerVisibility={layerVisibility} />
     </pixiContainer>
   );
 };

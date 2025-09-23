@@ -30,7 +30,13 @@ const LayersPanel: React.FC = () => {
     selectCanvas,
     selectLayer,
     createLayer,
+    getLayersForCanvas,
+    getPages,
+    getCanvasesForPage,
   } = useSocketStore();
+
+  // 계층구조 데이터 사용
+  const layers = selectedCanvasId ? getLayersForCanvas(selectedCanvasId) : [];
   const { currentCanvasId, connectToCanvas } = useYjsStore();
 
   // 레이어 생성 관련 상태
@@ -77,17 +83,14 @@ const LayersPanel: React.FC = () => {
 
   // 레이어 비지빌리티 초기화
   useEffect(() => {
-    if (selectedCanvasId) {
-      const canvasLayers = allData.layers.filter(
-        (l) => l.canvasId === selectedCanvasId
-      );
+    if (selectedCanvasId && layers.length > 0) {
       const initialVisibility: Record<string, boolean> = {};
-      canvasLayers.forEach((layer) => {
-        initialVisibility[layer._id] = true; // 기본적으로 모든 레이어를 보이게 설정
+      layers.forEach((layer) => {
+        initialVisibility[layer.id] = true; // 기본적으로 모든 레이어를 보이게 설정
       });
       setLayerVisibility(initialVisibility);
     }
-  }, [selectedCanvasId, allData.layers]);
+  }, [selectedCanvasId, layers]);
 
   // 버전 히스토리 로드
   const loadVersionHistory = async (layerId: string) => {
@@ -253,24 +256,52 @@ const LayersPanel: React.FC = () => {
             </div>
           </div>
 
+          {/* 레이어 디버깅 정보 */}
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#666",
+              margin: "5px 0",
+              padding: "5px",
+              background: "#f8f9fa",
+            }}
+          >
+            Selected Canvas: {selectedCanvasId || "None"}
+            <br />
+            Canvas Layers: {layers.length}
+            <br />
+            Layer Names: {layers.map((l) => l.name).join(", ")}
+          </div>
+
           <div className="layer-list">
-            {allData.layers
-              .filter((layer) => layer.canvasId === selectedCanvasId)
+            {selectedCanvasId && layers.length === 0 && (
+              <div
+                style={{
+                  padding: "10px",
+                  textAlign: "center",
+                  color: "#666",
+                  fontStyle: "italic",
+                }}
+              >
+                ⚠️ 이 캔버스에 레이어가 없습니다. 새 레이어를 생성하세요.
+              </div>
+            )}
+            {layers
               .sort((a, b) => a.order - b.order)
               .map((layer) => (
                 <div
-                  key={layer._id}
+                  key={layer.id}
                   className={`layer-item ${
-                    selectedLayerId === layer._id ? "selected" : ""
+                    selectedLayerId === layer.id ? "selected" : ""
                   }`}
-                  onClick={() => selectLayer(layer._id)}
+                  onClick={() => selectLayer(layer.id)}
                 >
                   <div className="layer-label">
                     <input
                       type="checkbox"
                       className="layer-checkbox"
-                      checked={selectedLayerId === layer._id}
-                      onChange={() => selectLayer(layer._id)}
+                      checked={selectedLayerId === layer.id}
+                      onChange={() => selectLayer(layer.id)}
                     />
                     <span className="layer-name">{layer.name}</span>
                     <span className="layer-status">{layer.type}</span>
@@ -279,13 +310,13 @@ const LayersPanel: React.FC = () => {
                     <button
                       onClick={(e) => {
                         e.stopPropagation(); // 레이어 선택 방지
-                        toggleLayerVisibility(layer._id);
+                        toggleLayerVisibility(layer.id);
                       }}
                       style={{
                         marginLeft: "auto",
                         padding: "2px 8px",
                         fontSize: "12px",
-                        backgroundColor: layerVisibility[layer._id]
+                        backgroundColor: layerVisibility[layer.id]
                           ? "#28a745"
                           : "#dc3545",
                         color: "white",
@@ -294,7 +325,7 @@ const LayersPanel: React.FC = () => {
                         cursor: "pointer",
                       }}
                     >
-                      {layerVisibility[layer._id] ? "보임" : "숨김"}
+                      {layerVisibility[layer.id] ? "보임" : "숨김"}
                     </button>
                   </div>
                 </div>

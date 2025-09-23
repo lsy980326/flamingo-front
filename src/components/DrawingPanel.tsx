@@ -1,13 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useYjsStore } from "../store/useYjsStore";
 import { useSocketStore } from "../store/useSocketStore";
 import { useUserStore } from "../store/useUserStore"; // 사용자 이름 가져오기
 import { CollaboratorCursors } from "./CollaboratorCursors"; // 커서 렌더링 컴포넌트
 import { PixiCanvas } from "./PixiCanvas";
+import { TextInputPanel } from "./TextInputPanel"; // 텍스트 입력 패널
 
 export const DrawingPanel = () => {
   // ✨ 캔버스 ID와 활성 레이어 ID를 가져옴
-  const { selectedCanvasId, selectedLayerId, allData } = useSocketStore();
+  const { selectedCanvasId, selectedLayerId, getLayersForCanvas } =
+    useSocketStore();
   const {
     connectToCanvas,
     disconnectFromCanvas,
@@ -38,12 +40,10 @@ export const DrawingPanel = () => {
       // setIsFullscreen(true); // 이 줄 제거
 
       // 캔버스 연결 시 모든 레이어를 기본적으로 보이도록 설정
-      const canvasLayers = allData.layers.filter(
-        (l) => l.canvasId === selectedCanvasId
-      );
+      const canvasLayers = getLayersForCanvas(selectedCanvasId);
       const initialVisibility: Record<string, boolean> = {};
       canvasLayers.forEach((layer) => {
-        initialVisibility[layer._id] = true; // 기본적으로 모든 레이어 보임
+        initialVisibility[layer.id] = true; // 기본적으로 모든 레이어 보임
       });
       setLayerVisibility(initialVisibility);
     } else {
@@ -53,7 +53,12 @@ export const DrawingPanel = () => {
       disconnectFromCanvas();
       setLayerVisibility({});
     };
-  }, [selectedCanvasId, connectToCanvas, disconnectFromCanvas, allData.layers]);
+  }, [
+    selectedCanvasId,
+    connectToCanvas,
+    disconnectFromCanvas,
+    getLayersForCanvas,
+  ]);
 
   // Yjs 연결 후 내 정보 설정
   useEffect(() => {
@@ -128,10 +133,10 @@ export const DrawingPanel = () => {
     endStroke();
   };
 
-  // 현재 캔버스의 레이어 목록
-  const currentCanvasLayers = allData.layers.filter(
-    (l) => l.canvasId === selectedCanvasId
-  );
+  // 현재 캔버스의 레이어 목록 (계층구조 데이터 사용) - useMemo로 최적화
+  const currentCanvasLayers = useMemo(() => {
+    return selectedCanvasId ? getLayersForCanvas(selectedCanvasId) : [];
+  }, [selectedCanvasId, getLayersForCanvas]);
 
   // 전체 화면 모드일 때의 캔버스 크기
   const fullscreenCanvasSize = {
@@ -167,10 +172,27 @@ export const DrawingPanel = () => {
 
       {!isFullscreen && (
         <div className="normal-header">
-          <h2>
-            Drawing Canvas {selectedCanvasId && `(Canvas: ${selectedCanvasId})`}
-            {selectedLayerId && ` - Active Layer: ${selectedLayerId}`}
-          </h2>
+          <h2>Drawing Canvas</h2>
+          <div
+            style={{ fontSize: "14px", color: "#666", marginBottom: "10px" }}
+          >
+            Canvas:{" "}
+            {selectedCanvasId
+              ? `✅ Selected (${selectedCanvasId.slice(-8)})`
+              : "❌ Not selected"}
+            <br />
+            Layer:{" "}
+            {selectedLayerId
+              ? `✅ Active (${selectedLayerId.slice(-8)})`
+              : "❌ Not selected"}
+            <br />
+            Yjs Status:{" "}
+            {yjsStatus === "connected"
+              ? "🟢 Connected"
+              : yjsStatus === "connecting"
+              ? "🟡 Connecting"
+              : "🔴 Disconnected"}
+          </div>
           {selectedCanvasId && (
             <button className="enter-fullscreen-btn" onClick={toggleFullscreen}>
               🖥️ Enter Fullscreen
@@ -191,19 +213,19 @@ export const DrawingPanel = () => {
 
           <div className="layer-list">
             {currentCanvasLayers.map((layer) => (
-              <div key={layer._id} className="layer-item">
+              <div key={layer.id} className="layer-item">
                 <label className="layer-label">
                   <input
                     type="checkbox"
-                    checked={layerVisibility[layer._id] ?? true}
-                    onChange={() => toggleLayerVisibility(layer._id)}
+                    checked={layerVisibility[layer.id] ?? true}
+                    onChange={() => toggleLayerVisibility(layer.id)}
                     className="layer-checkbox"
                   />
                   <span className="layer-name">
                     {layer.name || `Layer ${layer.order}`}
                   </span>
                   <span className="layer-status">
-                    {isLayerConnected(layer._id)
+                    {isLayerConnected(layer.id)
                       ? "🟢 Connected"
                       : "🔴 Disconnected"}
                   </span>
@@ -237,9 +259,24 @@ export const DrawingPanel = () => {
             layerVisibility={layerVisibility}
           />
           <CollaboratorCursors />
+          <TextInputPanel />
         </div>
       ) : (
-        <p>Select a canvas to start drawing.</p>
+        <div style={{ padding: "20px", textAlign: "center", color: "#666" }}>
+          <h3>🎨 캔버스를 선택해주세요</h3>
+          <p>그림을 그리려면 다음 단계를 따라주세요:</p>
+          <ol
+            style={{ textAlign: "left", maxWidth: "300px", margin: "0 auto" }}
+          >
+            <li>🔗 프로젝트에 연결</li>
+            <li>📄 페이지 선택</li>
+            <li>🎨 캔버스 선택</li>
+            <li>🎭 레이어 선택</li>
+          </ol>
+          <p style={{ marginTop: "15px", fontSize: "14px" }}>
+            모든 단계를 완료하면 여기에 캔버스가 표시됩니다.
+          </p>
+        </div>
       )}
     </div>
   );
