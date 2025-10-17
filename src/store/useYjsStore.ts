@@ -49,6 +49,16 @@ interface LayerYjsState {
   socketIOProvider: SocketIOProvider;
   webRTCProvider: WebrtcProvider;
   debouncedSave: ReturnType<typeof debounce>;
+  isHidden?: boolean; // 성능상 숨김 처리된 레이어
+  dataSize?: number; // 데이터 크기 (MB)
+}
+
+// 성능 경고 상태
+interface PerformanceWarning {
+  layerId: string;
+  dataSizeMB: string;
+  message: string;
+  timestamp: number;
 }
 
 // --- Zustand 스토어 인터페이스 ---
@@ -67,6 +77,17 @@ interface YjsState {
 
   // 레이어 데이터 임시 저장 (레이어 연결 전에 받은 JSON 데이터)
   pendingLayerData: Map<string, LayerPersistentData>;
+
+  // 성능 관련 상태
+  performanceWarnings: PerformanceWarning[];
+  hiddenLayers: Set<string>; // 성능상 숨김 처리된 레이어들
+
+  // 성능 최적화 설정
+  performanceSettings: {
+    maxStrokeLimit: number;
+    strokeReduction: number;
+    enabled: boolean;
+  };
 
   // 액션
   connectToCanvas: (canvasId: string) => void;
@@ -109,13 +130,34 @@ interface YjsState {
   // 레이어 상태 조회 헬퍼
   getLayerState: (layerId: string) => LayerYjsState | null;
   isLayerConnected: (layerId: string) => boolean;
+
+  // 성능 관련 액션
+  handlePerformanceWarning: (warning: PerformanceWarning) => void;
+  hideLayerForPerformance: (layerId: string) => void;
+  showLayerForPerformance: (layerId: string) => void;
+  clearPerformanceWarnings: () => void;
+  isLayerHidden: (layerId: string) => boolean;
+
+  // 성능 최적화 설정 액션
+  updatePerformanceSettings: (
+    settings: Partial<{
+      maxStrokeLimit: number;
+      strokeReduction: number;
+      enabled: boolean;
+    }>
+  ) => void;
+  getPerformanceSettings: () => {
+    maxStrokeLimit: number;
+    strokeReduction: number;
+    enabled: boolean;
+  };
 }
 
 // --- 유틸리티 함수 ---
-const logWithTime = (message: string, style: string = "") => {
-  const time = new Date().toLocaleTimeString("en-US", { hour12: false });
-  console.log(`%c[${time}] ${message}`, style);
-};
+// const logWithTime = (message: string, style: string = "") => {
+//   const time = new Date().toLocaleTimeString("en-US", { hour12: false });
+//   console.log(`%c[${time}] ${message}`, style);
+// };
 
 const toStrokeJson = (map: Y.Map<unknown>): StrokeJson => {
   return map.toJSON() as StrokeJson;
@@ -137,6 +179,17 @@ export const useYjsStore = create<YjsState>((set, get) => ({
   // 레이어 데이터 임시 저장
   pendingLayerData: new Map<string, LayerPersistentData>(),
 
+  // 성능 관련 상태
+  performanceWarnings: [],
+  hiddenLayers: new Set<string>(),
+
+  // 성능 최적화 설정 초기값
+  performanceSettings: {
+    maxStrokeLimit: 1000,
+    strokeReduction: 0,
+    enabled: false,
+  },
+
   // ========================================
   // Canvas 단위 연결 관리 (레이어 메타데이터만 로드)
   // ========================================
@@ -151,14 +204,18 @@ export const useYjsStore = create<YjsState>((set, get) => ({
         (l) => l.canvasId === canvasId
       );
 
-      // 펜딩 데이터가 있는 레이어 확인
-      const { pendingLayerData } = get();
-      const layersWithPendingData = canvasLayers.filter((layer) =>
-        pendingLayerData.has(layer._id)
-      );
+      // 펜딩 데이터가 있는 레이어 확인 (필요시 사용)
+      // const { pendingLayerData } = get();
+      // const layersWithPendingData = canvasLayers.filter((layer) =>
+      //   pendingLayerData.has(layer._id)
+      // );
 
       // 모든 레이어에 연결 (즉시 그림 표시를 위해)
+      console.log(
+        `[Yjs] Connecting to ${canvasLayers.length} layers for canvas ${canvasId}`
+      );
       for (const layer of canvasLayers) {
+        console.log(`[Yjs] Connecting to layer ${layer._id} (${layer.name})`);
         await get().connectToLayer(layer._id);
       }
 
@@ -194,7 +251,9 @@ export const useYjsStore = create<YjsState>((set, get) => ({
   // Layer 단위 Yjs 연결 관리
   // ========================================
   connectToLayer: async (layerId) => {
-    const { currentCanvasId, layerStates, pendingLayerData } = get();
+    const { currentCanvasId, layerStates } = get();
+    console.log(`[Yjs] Attempting to connect to layer ${layerId}`);
+
     if (!currentCanvasId) {
       console.error("❌ [Yjs] Canvas not connected");
       return;
@@ -202,6 +261,7 @@ export const useYjsStore = create<YjsState>((set, get) => ({
 
     // 이미 연결된 레이어인지 확인 (더 강력한 체크)
     if (layerStates.has(layerId)) {
+      console.log(`[Yjs] Layer ${layerId} already connected`);
       return;
     }
 
@@ -230,6 +290,11 @@ export const useYjsStore = create<YjsState>((set, get) => ({
       // 레이어 데이터 요청 및 로드
       await new Promise<void>((resolve, reject) => {
         socket.on("connect", () => {
+          // 성능 경고 이벤트 리스너 추가
+          socket.on("performance-warning", (warning: PerformanceWarning) => {
+            get().handlePerformanceWarning(warning);
+          });
+
           // 레이어 데이터 복원 이벤트 리스너 추가
           socket.on(
             "layer-data-restored",
@@ -384,6 +449,10 @@ export const useYjsStore = create<YjsState>((set, get) => ({
                   layerStates: newLayerStates,
                 });
 
+                console.log(
+                  `[Yjs] Layer ${layerId} connected successfully. Strokes count: ${strokes.length}`
+                );
+
                 // 연결 완료 시 connectingLayers에서 제거
                 set({
                   connectingLayers: new Set(
@@ -419,6 +488,7 @@ export const useYjsStore = create<YjsState>((set, get) => ({
         setTimeout(() => reject(new Error("Connection timeout")), 10000);
       });
     } catch (error) {
+      console.error(`[Yjs] Connection error for layer ${layerId}:`, error);
       // 에러 발생 시에도 connectingLayers에서 제거
       set({
         connectingLayers: new Set(
@@ -454,14 +524,24 @@ export const useYjsStore = create<YjsState>((set, get) => ({
     layerData: LayerPersistentData,
     layerState: LayerYjsState
   ) => {
+    console.log(`[Yjs] performDataLoad 시작 - 레이어: ${layerId}`, {
+      hasLayerData: !!layerData,
+      brushStrokesCount: layerData?.brushStrokes?.length || 0,
+      hasLayerState: !!layerState,
+      hasStrokes: !!layerState?.strokes,
+    });
+
     if (!layerData?.brushStrokes || layerData.brushStrokes.length === 0) {
+      console.warn(`[Yjs] 브러시 스트로크 데이터가 없습니다: ${layerId}`);
       return;
     }
 
     try {
       // 기존 strokes를 모두 지우기
       const strokes = layerState.strokes;
+      console.log(`[Yjs] 기존 스트로크 개수: ${strokes.length}`);
       strokes.delete(0, strokes.length);
+      console.log(`[Yjs] 기존 스트로크 삭제 완료`);
 
       layerData.brushStrokes.forEach((brushStroke: BrushStroke) => {
         // 개별 스트로크 로그 제거 (성능 향상)
@@ -555,9 +635,23 @@ export const useYjsStore = create<YjsState>((set, get) => ({
         strokes.push([newStroke as YStroke]);
       });
 
+      console.log(
+        `[Yjs] 스트로크 로드 완료 - 총 ${strokes.length}개 스트로크 추가됨`
+      );
+
       // UI 업데이트를 위한 상태 변경
       set({ layerStates: new Map(get().layerStates) });
-      setTimeout(() => get().forceRerender(), 100);
+      console.log(`[Yjs] 상태 업데이트 완료 - 강제 렌더링 실행`);
+
+      // 즉시 렌더링 실행 (지연 없이)
+      get().forceRerender();
+      console.log(`[Yjs] 강제 렌더링 완료`);
+
+      // 추가 렌더링 보장
+      setTimeout(() => {
+        get().forceRerender();
+        console.log(`[Yjs] 추가 렌더링 보장 완료`);
+      }, 50);
     } catch (error) {
       console.error(
         `[Yjs] Failed to load JSON data for layer ${layerId}:`,
@@ -840,5 +934,91 @@ export const useYjsStore = create<YjsState>((set, get) => ({
 
   forceRerender: () => {
     set({ forceUpdate: get().forceUpdate + 1 });
+  },
+
+  // ========================================
+  // 성능 관련 액션들
+  // ========================================
+  handlePerformanceWarning: (warning: PerformanceWarning) => {
+    const { performanceWarnings, hiddenLayers } = get();
+    const newWarnings = [
+      ...performanceWarnings,
+      { ...warning, timestamp: Date.now() },
+    ];
+
+    // 100MB 이상이면 자동으로 레이어 숨김
+    const dataSize = parseFloat(warning.dataSizeMB);
+    if (dataSize > 100) {
+      const newHiddenLayers = new Set(hiddenLayers);
+      newHiddenLayers.add(warning.layerId);
+      set({
+        performanceWarnings: newWarnings,
+        hiddenLayers: newHiddenLayers,
+      });
+
+      // 해당 레이어 연결 해제
+      get().disconnectFromLayer(warning.layerId);
+
+      console.warn(
+        `[Performance] Auto-hiding layer ${warning.layerId} due to large data size: ${warning.dataSizeMB}MB`
+      );
+    } else {
+      set({ performanceWarnings: newWarnings });
+      console.warn(
+        `[Performance] Warning for layer ${warning.layerId}: ${warning.dataSizeMB}MB`
+      );
+    }
+  },
+
+  hideLayerForPerformance: (layerId: string) => {
+    const { hiddenLayers } = get();
+    const newHiddenLayers = new Set(hiddenLayers);
+    newHiddenLayers.add(layerId);
+
+    set({ hiddenLayers: newHiddenLayers });
+
+    // 해당 레이어 연결 해제
+    get().disconnectFromLayer(layerId);
+
+    console.log(
+      `[Performance] Manually hiding layer ${layerId} for performance`
+    );
+  },
+
+  showLayerForPerformance: (layerId: string) => {
+    const { hiddenLayers } = get();
+    const newHiddenLayers = new Set(hiddenLayers);
+    newHiddenLayers.delete(layerId);
+
+    set({ hiddenLayers: newHiddenLayers });
+
+    console.log(`[Performance] Showing layer ${layerId}`);
+  },
+
+  clearPerformanceWarnings: () => {
+    set({ performanceWarnings: [] });
+  },
+
+  isLayerHidden: (layerId: string) => {
+    return get().hiddenLayers.has(layerId);
+  },
+
+  // ========================================
+  // 성능 최적화 설정 액션들
+  // ========================================
+  updatePerformanceSettings: (settings) => {
+    const currentSettings = get().performanceSettings;
+    const newSettings = { ...currentSettings, ...settings };
+
+    console.log("🎯 성능 설정 업데이트:", newSettings);
+
+    set({ performanceSettings: newSettings });
+
+    // 설정 변경 시 강제 렌더링
+    get().forceRerender();
+  },
+
+  getPerformanceSettings: () => {
+    return get().performanceSettings;
   },
 }));

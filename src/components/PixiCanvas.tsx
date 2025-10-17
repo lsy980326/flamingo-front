@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Application, extend } from "@pixi/react";
 import * as PIXI from "pixi.js";
 import * as Y from "yjs";
 import { useYjsStore } from "../store/useYjsStore";
 import { useSocketStore } from "../store/useSocketStore"; // 메타데이터를 위한 스토어
-import type { Layer } from "../types";
+// import type { Layer } from "../types"; // 사용하지 않음
 
 // Pixi 객체들을 React 컴포넌트로 사용할 수 있도록 확장
 extend({ Container: PIXI.Container, Graphics: PIXI.Graphics, Text: PIXI.Text });
@@ -21,10 +21,10 @@ type StrokeShape = {
   size: number;
   layerId?: string; // 레이어 ID 추가
 };
-interface ExtendedLayerMeta extends Layer {
-  opacity?: number;
-  isVisible?: boolean;
-}
+// interface ExtendedLayerMeta extends Layer {
+//   opacity?: number;
+//   isVisible?: boolean;
+// }
 
 // 모든 레이어의 그림 데이터를 렌더링하는 컴포넌트
 const DrawingLayer = ({
@@ -35,6 +35,7 @@ const DrawingLayer = ({
   // 1. Yjs로부터 레이어별 그림 데이터를 가져옴
   const layerStates = useYjsStore((state) => state.layerStates);
   const awarenessStates = useYjsStore((state) => state.awarenessStates);
+  const performanceSettings = useYjsStore((state) => state.performanceSettings);
   const myClientId = useYjsStore((state) =>
     state.awarenessStates.size > 0
       ? Array.from(state.awarenessStates.keys())[0]
@@ -79,13 +80,23 @@ const DrawingLayer = ({
     return () => {
       observers.forEach((cleanup) => cleanup());
     };
-  }, [layerStates, forceUpdate]); // forceUpdate 추가하여 버전 복구 시 강제 업데이트
+  }, [layerStates, forceUpdate, performanceSettings]); // performanceSettings 의존성 추가
 
   const draw = useCallback(
     (g: PIXI.Graphics) => {
       g.clear();
 
-      if (!selectedCanvasId || layerStates.size === 0) return;
+      // console.log("[PixiCanvas] Drawing debug:", {
+      //   selectedCanvasId,
+      //   layerStatesSize: layerStates.size,
+      //   layerMetadatasLength: layerMetadatas.length,
+      //   layerVisibility,
+      // });
+
+      if (!selectedCanvasId || layerStates.size === 0) {
+        console.log("[PixiCanvas] No canvas or layer states");
+        return;
+      }
 
       // 현재 캔버스에 속한 레이어 메타데이터만 필터링하고 순서대로 정렬
       const targetLayersMeta = layerMetadatas
@@ -114,11 +125,55 @@ const DrawingLayer = ({
         if (meta.type === "brush") {
           // Yjs 데이터가 있으면 Yjs에서 가져오기
           const layerState = layerStates.get(meta._id);
+          // console.log(`[PixiCanvas] Layer ${meta._id} (${meta.name}):`, {
+          //   hasLayerState: !!layerState,
+          //   layerType: meta.type,
+          //   isVisible,
+          //   isUserVisible,
+          // });
+
           if (layerState) {
             const strokesArray = layerState.strokes;
-            const allStrokes = strokesArray
+            let allStrokes = strokesArray
               ? strokesArray.toArray().map(yStrokeToObj)
               : [];
+
+            // 성능 설정이 활성화된 경우 스트로크 제한 적용
+            if (performanceSettings.enabled) {
+              const maxStrokes = performanceSettings.maxStrokeLimit;
+              const strokeReduction = performanceSettings.strokeReduction;
+
+              // 스트로크 수 제한
+              if (allStrokes.length > maxStrokes) {
+                console.log(
+                  `🎯 레이어 ${meta._id}: 스트로크 수 제한 적용 (${allStrokes.length} → ${maxStrokes})`
+                );
+                allStrokes = allStrokes.slice(-maxStrokes); // 최신 스트로크만 유지
+              }
+
+              // 스트로크 단순화 적용
+              if (strokeReduction > 0) {
+                const reductionFactor = Math.floor(
+                  allStrokes.length * strokeReduction
+                );
+                if (reductionFactor > 0) {
+                  console.log(
+                    `🎯 레이어 ${meta._id}: 스트로크 단순화 적용 (${
+                      allStrokes.length
+                    } → ${allStrokes.length - reductionFactor})`
+                  );
+                  allStrokes = allStrokes.filter(
+                    (_, index) =>
+                      index % Math.ceil(1 / (1 - strokeReduction)) === 0
+                  );
+                }
+              }
+            }
+
+            // console.log(`[PixiCanvas] Layer ${meta._id} strokes:`, {
+            //   strokesArrayLength: strokesArray?.length || 0,
+            //   allStrokesLength: allStrokes.length,
+            // });
 
             // 이 레이어의 모든 스트로크 그리기
             allStrokes.forEach((stroke) => {
@@ -237,17 +292,7 @@ const TextLayer = ({
       layerVisibility[meta._id] !== false
   );
 
-  // 디버깅 로그
-  console.log("TextLayer 렌더링:", {
-    selectedCanvasId,
-    textLayersCount: textLayers.length,
-    textLayers: textLayers.map((meta) => ({
-      id: meta._id,
-      name: meta.name,
-      textObjectsCount: meta.layer_data?.textObjects?.length || 0,
-      textObjects: meta.layer_data?.textObjects || [],
-    })),
-  });
+  // 디버깅 로그 제거 (성능 최적화)
 
   return (
     <>
@@ -265,7 +310,7 @@ const TextLayer = ({
                 fontSize: textObj.style?.size || 16,
                 fill: textObj.style?.color || "#000000",
                 fontFamily: textObj.style?.font || "Arial",
-                alpha: (meta.opacity || 100) / 100,
+                // alpha: (meta.opacity || 100) / 100,
               }}
             />
           )
@@ -357,7 +402,12 @@ export const PixiCanvas = ({
   layerVisibility?: Record<string, boolean>;
 }) => {
   return (
-    <Application width={width} height={height} background={0xffffff} antialias>
+    <Application
+      width={width}
+      height={height}
+      backgroundColor={0xffffff}
+      antialias
+    >
       <DrawingContainer
         width={width}
         height={height}

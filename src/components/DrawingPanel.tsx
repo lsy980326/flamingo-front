@@ -4,7 +4,10 @@ import { useSocketStore } from "../store/useSocketStore";
 import { useUserStore } from "../store/useUserStore"; // 사용자 이름 가져오기
 import { CollaboratorCursors } from "./CollaboratorCursors"; // 커서 렌더링 컴포넌트
 import { PixiCanvas } from "./PixiCanvas";
+// import { OptimizedPixiCanvas } from "./OptimizedPixiCanvas"; // 사용하지 않음
+// import { PerformanceMonitor } from "../utils/PerformanceMonitor"; // 성능 탭에서 처리하므로 제거
 import { TextInputPanel } from "./TextInputPanel"; // 텍스트 입력 패널
+import { ErrorBoundary } from "./ErrorBoundary";
 
 export const DrawingPanel = () => {
   // ✨ 캔버스 ID와 활성 레이어 ID를 가져옴
@@ -21,6 +24,8 @@ export const DrawingPanel = () => {
     endStroke,
     isLayerConnected,
     forceUpdate,
+    // isLayerHidden,
+    // hiddenLayers,
   } = useYjsStore();
   const userName = useUserStore((state) => state.name);
 
@@ -28,6 +33,10 @@ export const DrawingPanel = () => {
   const [layerVisibility, setLayerVisibility] = useState<
     Record<string, boolean>
   >({});
+
+  // 성능 최적화 상태 (성능 탭에서 처리하므로 제거)
+  // const [viewport] = useState({ x: 0, y: 0, width: 800, height: 600 }); // 사용하지 않음
+  // const [scale] = useState(1); // 사용하지 않음
 
   // 전체 화면 모드 상태 (기본값은 false)
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -253,11 +262,14 @@ export const DrawingPanel = () => {
             margin: "0 auto",
           }}
         >
-          <PixiCanvas
-            width={canvasSize.width}
-            height={canvasSize.height}
-            layerVisibility={layerVisibility}
-          />
+          <ErrorBoundary>
+            {/* 성능 탭에서 처리하므로 OptimizedPixiCanvas 사용 안함 */}
+            <PixiCanvas
+              width={canvasSize.width}
+              height={canvasSize.height}
+              layerVisibility={layerVisibility}
+            />
+          </ErrorBoundary>
           <CollaboratorCursors />
           <TextInputPanel />
         </div>
@@ -278,6 +290,8 @@ export const DrawingPanel = () => {
           </p>
         </div>
       )}
+
+      {/* 성능 최적화 컨트롤 패널 - 제거됨 (성능 탭에서 처리) */}
     </div>
   );
 };
